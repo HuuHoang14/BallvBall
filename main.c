@@ -444,7 +444,9 @@ static void ClosePreviousInstanceIfRunning(const char* windowTitle) { (void)wind
 #define MAX_BALLS           32
 
 // ======================= ENUMS & STRUCTS =======================
-typedef enum { MENU_MODE, MENU_BOT_MODE, MENU_SELECT, MENU_GACHA, MENU_ADMIN_LOGIN, COUNTDOWN, PLAYING, GAME_OVER } GameState;
+typedef enum { MENU_MODE, MENU_SANDBOX, MENU_BOT_MODE, MENU_CHALLENGER, MENU_SELECT, MENU_GACHA, MENU_INVENTORY, COUNTDOWN, PLAYING, GAME_OVER } GameState;
+typedef enum { BOT_EASY = 0, BOT_MEDIUM, BOT_HARD, BOT_IMPOSSIBLE, BOT_DIFF_COUNT } BotDifficulty;
+typedef enum { INV_TAB_INVENTORY = 0, INV_TAB_UPGRADE, INV_TAB_FUSION, INV_TAB_FORGE } InventoryTab;
 typedef enum { RARITY_COMMON = 0, RARITY_UNCOMMON, RARITY_RARE, RARITY_MYTHIC, RARITY_LEGENDARY, RARITY_COUNT } BallRarity;
 typedef enum {
     TYPE_BURST, TYPE_HARPOON, TYPE_VERITY, TYPE_DEVIL,
@@ -706,6 +708,7 @@ typedef struct {
     float radius;           // 1.8x ball radius (54px)
     float age;
     int team;
+    float dmgMult;
     bool active;
 } BurnZone;
 
@@ -735,6 +738,10 @@ typedef struct {
     BallType type;
 
     int damage;
+    float dmgMult;          // attacker damage multiplier (Upgrade +2.5%/lv, Hard Bot +15%, Impossible Bot +25%)
+    float homingBonus;      // extra homing bias for Hard (+5%) / Impossible (+10%) Bot contact-dmg balls
+    float dodgeChance;      // 5% chance to take 0 damage (Impossible Bot)
+    float dmgRedChance;     // 10% chance to reduce incoming damage by 33% (Impossible Bot)
     float skillTimer;
     float durationTimer;
 
@@ -796,10 +803,15 @@ typedef struct {
     float slowPTimer;
     int poisonTicks;
     float poisonTick;
+    float poisonDmgMult;
 
     // Archer burn debuff (3 HP every 0.75s for 3 ticks = 9 HP total)
     int burnTicks;
     float burnTickTimer;
+    float burnDmgMult;
+
+    float shockDmgMult;
+    float freezeDmgMult;
 
     // Short separation speed boost
     float boostTimer;
@@ -837,12 +849,13 @@ typedef struct {
     int iceHead;
 } Ball;
 
-typedef struct { Vector2 pos, vel; float angle; float travelled; int team; bool active; } Kunai;
+typedef struct { Vector2 pos, vel; float angle; float travelled; int team; float dmgMult; bool active; } Kunai;
 typedef struct {
     Vector2 pos;
     Vector2 dir;
     Vector2 endPos;
     int team;
+    float dmgMult;
     float shootTimer;
     float beamTimer;
     bool active;
@@ -853,6 +866,7 @@ typedef struct {
     Vector2 vel;
     float travelled;
     int team;
+    float dmgMult;
     bool active;
 } CactusBomb;
 
@@ -865,6 +879,7 @@ typedef struct {
     float maxDist;
     bool curving;
     int team;
+    float dmgMult;
     bool active;
 } CactusSpike;
 
@@ -874,6 +889,7 @@ typedef struct {
     float spinAngle;
     float travelled;        // distance flown so far (limited to TORNADO_RANGE)
     int team;
+    float dmgMult;
     bool hit[MAX_BALLS];    // tracks enemies already stunned by this tornado along its path
     bool active;
 } WindTornado;
@@ -883,6 +899,7 @@ typedef struct {
     Vector2 vel;
     float travelled;
     int team;
+    float dmgMult;
     bool active;
 } GunBullet;
 
@@ -892,6 +909,7 @@ typedef struct {
     float angle;
     Color cardCol;
     int team;
+    float dmgMult;
     bool active;
 } TarotCard;
 
@@ -1033,11 +1051,11 @@ static void CreateZone(Vector2 pos, float radius, PotionKind kind, int ownerIdx)
     *z = (Zone){ .pos = pos, .radius = radius, .age = 0.0f, .kind = kind, .ownerIdx = ownerIdx, .active = true };
 }
 
-static void CreateBurnZone(Vector2 pos, float radius, int team)
+static void CreateBurnZone(Vector2 pos, float radius, int team, float dmgMult)
 {
     BurnZone* bz = &g_burnZones[g_burnZoneNext];
     g_burnZoneNext = (g_burnZoneNext + 1) % BURN_ZONE_MAX;
-    *bz = (BurnZone){ .pos = ClampScreen(pos, 10.0f), .radius = radius, .age = 0.0f, .team = team, .active = true };
+    *bz = (BurnZone){ .pos = ClampScreen(pos, 10.0f), .radius = radius, .age = 0.0f, .team = team, .dmgMult = dmgMult, .active = true };
     AddFx(bz->pos, radius, ORANGE);
 }
 
@@ -1240,6 +1258,11 @@ static int InitBallStats(int idx, BallType type, int team, Vector2 startPos)
     b->pos = startPos;
     b->hp = 100;
     b->maxHp = 100;
+    b->dmgMult = 1.0f;
+    b->burnDmgMult = 1.0f;
+    b->poisonDmgMult = 1.0f;
+    b->shockDmgMult = 1.0f;
+    b->freezeDmgMult = 1.0f;
     b->radius = BASE_RADIUS;
     b->type = type;
     for (int i = 0; i < SHADOW_N; i++) b->shadowHistory[i] = startPos;
@@ -1526,7 +1549,7 @@ static float LerpChance(int hp, int hpHigh, int hpLow, float minPct, float maxPc
     return minPct + t * (maxPct - minPct);
 }
 
-static void DealDamage(Ball* victim, int dmg, bool bypass)
+static void DealDamageScaled(Ball* victim, int dmg, bool bypass, float atkMult)
 {
     if (!IsCombatBall(victim)) return;
     // King is completely immune to ALL damage while dashing to its flag
@@ -1535,6 +1558,19 @@ static void DealDamage(Ball* victim, int dmg, bool bypass)
     if (victim->type == TYPE_JUDGEMENT && (victim->judgement.state == 2 || victim->judgement.immuneTimer > 0.0f)) return;
     // Shocked or Dice-locked targets are invulnerable to external damage
     if (!bypass && (victim->shocked || victim->diceLocked)) return;
+
+    // Impossible Bot passive: 5% chance to be 100% immune to incoming damage
+    if (!bypass && victim->dodgeChance > 0.0f && dmg > 0) {
+        if (GetRandomValue(1, 1000) <= (int)(victim->dodgeChance * 1000.0f)) {
+            AddFx(victim->pos, (float)victim->radius * 1.15f, WHITE);
+            return;
+        }
+    }
+
+    if (atkMult > 0.0f && atkMult != 1.0f && dmg > 0) {
+        dmg = (int)roundf((float)dmg * atkMult);
+        if (dmg < 1) dmg = 1;
+    }
 
     // Judgement takes 50% reduced damage during its 0.75s charge (state == 1)
     if (victim->type == TYPE_JUDGEMENT && victim->judgement.state == 1 && dmg > 0) {
@@ -1546,6 +1582,15 @@ static void DealDamage(Ball* victim, int dmg, bool bypass)
     if (!bypass && victim->type == TYPE_SQUIRE && dmg > 0) {
         dmg = (int)roundf((float)dmg * (1.0f - SQUIRE_DMG_RED));
         if (dmg < 1) dmg = 1;
+    }
+
+    // Impossible Bot passive: 10% chance to reduce incoming damage by 33%
+    if (!bypass && victim->dmgRedChance > 0.0f && dmg > 0) {
+        if (GetRandomValue(1, 1000) <= (int)(victim->dmgRedChance * 1000.0f)) {
+            dmg = (int)roundf((float)dmg * 0.67f);
+            if (dmg < 1) dmg = 1;
+            AddFx(victim->pos, (float)victim->radius * 1.05f, SKYBLUE);
+        }
     }
 
     int raw = dmg;
@@ -1601,7 +1646,10 @@ static void DealDamage(Ball* victim, int dmg, bool bypass)
     }
 }
 
-static inline void TakeDamage(Ball* victim, int dmg) { DealDamage(victim, dmg, false); }
+static inline void DealDamage(Ball* victim, int dmg, bool bypass) { DealDamageScaled(victim, dmg, bypass, 1.0f); }
+static inline void TakeDamage(Ball* victim, int dmg) { DealDamageScaled(victim, dmg, false, 1.0f); }
+static inline void TakeDamageFrom(Ball* victim, const Ball* attacker, int dmg) { DealDamageScaled(victim, dmg, false, attacker ? attacker->dmgMult : 1.0f); }
+static inline void TakeDamageScaled(Ball* victim, int dmg, float atkMult) { DealDamageScaled(victim, dmg, false, atkMult); }
 
 static void HealBall(Ball* b, int amt)
 {
@@ -1749,7 +1797,7 @@ static void ApplyContact(int attIdx, int vicIdx)
                 victim->gambler.nextHitDmg = 0;
                 int aceTotalDmg = (int)roundf((float)dmg * 0.33f) + bonusDiceDmg;
                 if (aceTotalDmg < 1) aceTotalDmg = 1;
-                TakeDamage(attacker, aceTotalDmg);
+                TakeDamageFrom(attacker, victim, aceTotalDmg);
                 AddFx(attacker->pos, (float)attacker->radius * 1.35f, GOLD);
                 AddFx(victim->pos, (float)victim->radius * 1.25f, GOLD);
                 dmg = 0;
@@ -1769,7 +1817,7 @@ static void ApplyContact(int attIdx, int vicIdx)
     }
 
     if (dmg > 0 && IsCombatBall(victim)) {
-        TakeDamage(victim, dmg);
+        TakeDamageFrom(victim, attacker, dmg);
     }
 
     // Charge resets its size and contact damage back to initial values after hitting an enemy
@@ -1801,6 +1849,7 @@ static void ApplyContact(int attIdx, int vicIdx)
         victim->shockTicks = SHOCK_TICKS;
         victim->shockTick = SHOCK_TICK_TIME;
         victim->shockPos = victim->pos;
+        victim->shockDmgMult = attacker->dmgMult;
     }
 }
 
@@ -1963,7 +2012,7 @@ static void UpdateHarpoon(int bIdx, float dt)
                 h->victimIdx = j;
                 h->trailCursor = (float)h->trailCount;
                 // Deal 1 damage immediately upon hook impact, then wait 0.05s for the next tick
-                TakeDamage(cand, 1);
+                TakeDamageFrom(cand, b, 1);
                 h->pullDmgTimer = HARPOON_PULL_TICK;
                 break;
             }
@@ -1991,7 +2040,7 @@ static void UpdateHarpoon(int bIdx, float dt)
 
             h->pullDmgTimer -= dt;
             while (h->pullDmgTimer <= 0.0f && IsCombatBall(vic)) {
-                TakeDamage(vic, 1);
+                TakeDamageFrom(vic, b, 1);
                 h->pullDmgTimer += HARPOON_PULL_TICK;
             }
         } else {
@@ -2030,7 +2079,7 @@ static void UpdateDevil(Ball* b, float dt)
         b->drainTicks--;
         int amt = (b->drainAmt > enemy->hp) ? enemy->hp : b->drainAmt;
         if (amt > 0 && !enemy->shocked) {
-            TakeDamage(enemy, amt);
+            TakeDamageFrom(enemy, b, amt);
             b->hp += amt;
             AddPopup(b->pos, amt, true);
 
@@ -2124,7 +2173,7 @@ static void UpdateTrident(Ball* b, float dt)
             if (!IsCombatBall(cand) || cand->team == b->team || t->hit[j]) continue;
             float hitR = cand->radius + 8.0f;
             if (V2DistSq(t->pos, cand->pos) <= hitR * hitR) {
-                TakeDamage(cand, TRIDENT_DAMAGE);
+                TakeDamageFrom(cand, b, TRIDENT_DAMAGE);
                 t->hit[j] = true;
             }
         }
@@ -2173,7 +2222,7 @@ static void UpdateBow(Ball* b, float dt)
             if (!IsCombatBall(cand) || cand->team == b->team) continue;
             float hitR = cand->radius + 6.0f;
             if (V2DistSq(tip, cand->pos) <= hitR * hitR || V2DistSq(bw->pos, cand->pos) <= hitR * hitR) {
-                TakeDamage(cand, BOW_ARROW_DMG);
+                TakeDamageFrom(cand, b, BOW_ARROW_DMG);
                 bw->active = false;
                 break;
             }
@@ -2231,6 +2280,7 @@ static void UpdateNinja(Ball* b, float dt)
                         .angle = angle,
                         .travelled = 0.0f,
                         .team = b->team,
+                        .dmgMult = b->dmgMult,
                         .active = true
                     };
                 }
@@ -2293,6 +2343,7 @@ static void UpdateGun(Ball* b, float dt)
                     .vel = { cosf(angle) * GUN_BULLET_SPEED, sinf(angle) * GUN_BULLET_SPEED },
                     .travelled = 0.0f,
                     .team = b->team,
+                    .dmgMult = b->dmgMult,
                     .active = true
                 };
             }
@@ -2329,6 +2380,7 @@ static void UpdateGun(Ball* b, float dt)
                     .vel = { cosf(angle) * GUN_BULLET_SPEED, sinf(angle) * GUN_BULLET_SPEED },
                     .travelled = 0.0f,
                     .team = b->team,
+                    .dmgMult = b->dmgMult,
                     .active = true
                 };
             }
@@ -2352,7 +2404,7 @@ static void UpdateGun(Ball* b, float dt)
 }
 
 // ======================= CACTUS (SPIKE) AI & PROJECTILES =======================
-static void ExplodeCactusBomb(Vector2 pos, int team)
+static void ExplodeCactusBomb(Vector2 pos, int team, float dmgMult)
 {
     bool curveball = (GetRandomValue(1, 100) <= 20);
     float maxR = curveball ? CACTUS_CURVE_RANGE : CACTUS_SPIKE_RANGE;
@@ -2372,6 +2424,7 @@ static void ExplodeCactusBomb(Vector2 pos, int team)
             .maxDist = maxR,
             .curving = curveball,
             .team = team,
+            .dmgMult = dmgMult,
             .active = true
         };
     }
@@ -2393,6 +2446,7 @@ static void FireSingleCactusBomb(Ball* b, const Ball* enemy)
         .vel = { cosf(angle) * CACTUS_BOMB_SPEED, sinf(angle) * CACTUS_BOMB_SPEED },
         .travelled = 0.0f,
         .team = b->team,
+        .dmgMult = b->dmgMult,
         .active = true
     };
 }
@@ -2487,6 +2541,7 @@ static void UpdateWind(Ball* b, float dt)
     wt->vel = (Vector2){ cosf(angle) * TORNADO_SPEED, sinf(angle) * TORNADO_SPEED };
     wt->spinAngle = 0.0f;
     wt->team = b->team;
+    wt->dmgMult = b->dmgMult;
     wt->active = true;
 }
 
@@ -2704,7 +2759,7 @@ static void UpdateChess(Ball* b, float dt)
             if (!IsCombatBall(e) || e->team == b->team || cd->hitThisRay[j] || b->chessHitImmune[j] > 0.0f) continue;
             float rsum = (float)(b->radius + e->radius);
             if (V2DistSq(b->pos, e->pos) <= rsum * rsum) {
-                TakeDamage(e, CHESS_SKILL_DMG);
+                TakeDamageFrom(e, b, CHESS_SKILL_DMG);
                 cd->hitThisRay[j] = true;
                 // 0.65s per-target immunity prevents rapid consecutive rays at the anchor from melting an enemy
                 b->chessHitImmune[j] = 0.65f;
@@ -2777,7 +2832,7 @@ static void UpdateDice(Ball* b, float dt, bool immobilized)
             e->diceLocked = true;
             e->diceLockTimer = DICE_LOCK_TIME;
             e->diceLockPos = e->pos;
-            DealDamage(e, dmg, true);
+            DealDamageScaled(e, dmg, true, b->dmgMult);
         }
     }
 }
@@ -2849,6 +2904,7 @@ static void FirePsychicTarotVolley(Ball* b, const Ball* enemy)
             .angle = a,
             .cardCol = cardPalette[k],
             .team = b->team,
+            .dmgMult = b->dmgMult,
             .active = true
         };
     }
@@ -3024,7 +3080,7 @@ static void UpdateUnshackled(Ball* b, float dt)
                 float hitR = slamR + (float)e->radius;
                 if (V2DistSq(b->pos, e->pos) <= hitR * hitR) {
                     hitAny = true;
-                    TakeDamage(e, UNSHACKLED_SLAM_DMG);
+                    TakeDamageFrom(e, b, UNSHACKLED_SLAM_DMG);
                     if (IsCombatBall(e) && !IsKingDashing(e)) {
                         e->slamLocked = true;
                         e->slamLockTimer = UNSHACKLED_SLAM_HOLD_T;
@@ -3064,7 +3120,7 @@ static void UpdateUnshackled(Ball* b, float dt)
                     float perp = fabsf(rel.x * (-dir.y) + rel.y * dir.x);
                     if (perp <= halfW + (float)e->radius) {
                         hitAny = true;
-                        TakeDamage(e, UNSHACKLED_LUX_DMG);
+                        TakeDamageFrom(e, b, UNSHACKLED_LUX_DMG);
                     }
                 }
             }
@@ -3106,7 +3162,7 @@ static void UpdateUnshackled(Ball* b, float dt)
                     if (e->hp <= UNSHACKLED_EXEC_HP) {
                         DealDamage(e, e->hp, true);
                     } else {
-                        TakeDamage(e, UNSHACKLED_SWORD_TARGET_DMG);
+                        TakeDamageFrom(e, b, UNSHACKLED_SWORD_TARGET_DMG);
                     }
                 } else {
                     float rCheck = splashRadius + (float)e->radius;
@@ -3116,7 +3172,7 @@ static void UpdateUnshackled(Ball* b, float dt)
                         if (e->hp <= UNSHACKLED_EXEC_HP) {
                             DealDamage(e, e->hp, true);
                         } else {
-                            TakeDamage(e, UNSHACKLED_SWORD_AOE_DMG);
+                            TakeDamageFrom(e, b, UNSHACKLED_SWORD_AOE_DMG);
                         }
                     }
                 }
@@ -3244,7 +3300,7 @@ static void UpdateJudgement(Ball* b, float dt)
 
             float rsum = (float)(b->radius + lockE->radius);
             if (V2DistSq(b->pos, lockE->pos) <= (rsum + 4.0f) * (rsum + 4.0f)) {
-                TakeDamage(lockE, JUDGEMENT_RAM_DMG);
+                TakeDamageFrom(lockE, b, JUDGEMENT_RAM_DMG);
                 AddFx(lockE->pos, (float)lockE->radius * 1.6f, GOLD);
 
                 if (IsCombatBall(lockE) && !IsFixed(lockE)) {
@@ -3390,7 +3446,7 @@ static void UpdateTrain(Ball* b, float dt)
                     float hitR = (TRAIN_TRACK_W * 0.5f) + (float)e->radius;
                     if (V2DistSq(tr->carPos[c], e->pos) <= hitR * hitR) {
                         tr->hitImmune[j] = TRAIN_IMMUNE_TIME;
-                        TakeDamage(e, TRAIN_HIT_DMG);
+                        TakeDamageFrom(e, b, TRAIN_HIT_DMG);
                         AddFx(e->pos, (float)e->radius * 1.3f, DARKGRAY);
                     }
                 }
@@ -3468,10 +3524,10 @@ static void UpdateSpider(Ball* b, float dt)
             if (inside) {
                 if (!w->touching[j]) {
                     w->touching[j] = true;
-                    TakeDamage(e, SPIDER_WEB_DMG);
+                    TakeDamageFrom(e, b, SPIDER_WEB_DMG);
                 } else if (GetRandomValue(1, 10) <= 3) {
                     // Continuous 1 HP damage while moving across the sticky web thread
-                    TakeDamage(e, SPIDER_WEB_DMG);
+                    TakeDamageFrom(e, b, SPIDER_WEB_DMG);
                 }
             } else {
                 w->touching[j] = false;
@@ -3505,7 +3561,7 @@ static void UpdateRange(Ball* b, float dt)
             if (!IsCombatBall(e) || e->team == b->team) continue;
             float hitR = rg->ringRadius + (float)e->radius;
             if (V2DistSq(b->pos, e->pos) <= hitR * hitR) {
-                TakeDamage(e, RANGE_TICK_DMG);
+                TakeDamageFrom(e, b, RANGE_TICK_DMG);
             }
         }
     }
@@ -3560,7 +3616,7 @@ static void UpdateKnight(Ball* b, float dt)
                     // Account for the target ball's angular radius
                     float angSubtend = atan2f((float)e->radius * 0.85f, fmaxf(dist, (float)b->radius));
                     if (angDiff <= halfConeRad + angSubtend) {
-                        TakeDamage(e, KNIGHT_SLASH_DMG);
+                        TakeDamageFrom(e, b, KNIGHT_SLASH_DMG);
                         AddFx(e->pos, (float)e->radius * 1.15f, WHITE);
                     }
                 }
@@ -3687,7 +3743,7 @@ static void UpdateExecuter(Ball* b, float dt)
                     RestoreVelocity(e);
                 }
                 if (hit) {
-                    DealDamage(e, EXECUTER_SLAM_DMG, true);
+                    DealDamageScaled(e, EXECUTER_SLAM_DMG, true, b->dmgMult);
                     if (IsCombatBall(e)) e->painFlashTimer = 0.65f;
                     for (int q = 0; q < 12; q++) {
                         float a = (float)GetRandomValue(0, 359) * DEG2RAD;
@@ -3732,7 +3788,7 @@ static void UpdateKing(Ball* b, float dt)
                 if (!IsCombatBall(e) || e->team == b->team) continue;
                 float hitR = KING_FLAG_RAD + (float)e->radius;
                 if (V2DistSq(kg->flagPos, e->pos) <= hitR * hitR) {
-                    TakeDamage(e, KING_FLAG_DMG); // 10 HP flag impact damage
+                    TakeDamageFrom(e, b, KING_FLAG_DMG); // 10 HP flag impact damage
                 }
             }
         }
@@ -3756,7 +3812,7 @@ static void UpdateKing(Ball* b, float dt)
             float rsum = (float)(b->radius + e->radius);
             if (V2DistSq(b->pos, e->pos) <= rsum * rsum) {
                 kg->hitOnDash[j] = true;
-                TakeDamage(e, KING_DASH_DMG); // 15 HP dash damage
+                TakeDamageFrom(e, b, KING_DASH_DMG); // 15 HP dash damage
                 if (IsCombatBall(e) && !IsKingDashing(e)) {
                     e->slamLocked = true;
                     e->slamLockTimer = KING_STUN_T; // 0.40s stun
@@ -3777,9 +3833,10 @@ static void UpdateKing(Ball* b, float dt)
 }
 
 // Helper to ignite an enemy with Archer's Burn debuff (3 HP every 0.75s for 3 ticks = 9 HP total)
-static void ApplyArcherBurn(Ball* e)
+static void ApplyArcherBurn(Ball* e, float dmgMult)
 {
     if (!IsCombatBall(e) || IsKingDashing(e)) return;
+    e->burnDmgMult = dmgMult;
     if (e->burnTicks <= 0) {
         e->burnTicks = ARCHER_BURN_TICKS;
         e->burnTickTimer = ARCHER_BURN_TICK_T;
@@ -3824,7 +3881,7 @@ static void UpdateCatapult(Ball* b, float dt)
                 if (!IsCombatBall(e) || e->team == b->team) continue;
                 float hitR = CATAPULT_AOE_RAD + (float)e->radius;
                 if (V2DistSq(landPos, e->pos) <= hitR * hitR) {
-                    TakeDamage(e, CATAPULT_DMG);
+                    TakeDamageFrom(e, b, CATAPULT_DMG);
                 }
             }
         }
@@ -3906,11 +3963,11 @@ static void UpdateArcher(Ball* b, float dt)
             if (!IsCombatBall(cand) || cand->team == b->team) continue;
             float hitR = (float)cand->radius + 6.0f;
             if (V2DistSq(tip, cand->pos) <= hitR * hitR || V2DistSq(ar->arrowPos, cand->pos) <= hitR * hitR) {
-                TakeDamage(cand, ARCHER_DIRECT_DMG); // 10 HP direct hit
+                TakeDamageFrom(cand, b, ARCHER_DIRECT_DMG); // 10 HP direct hit
                 if (IsCombatBall(cand)) {
-                    ApplyArcherBurn(cand);           // guaranteed Burn on direct hit
+                    ApplyArcherBurn(cand, b->dmgMult); // guaranteed Burn on direct hit
                 }
-                CreateBurnZone(cand->pos, ARCHER_ZONE_RAD, b->team);
+                CreateBurnZone(cand->pos, ARCHER_ZONE_RAD, b->team, b->dmgMult);
                 ar->arrowActive = false;
                 return;
             }
@@ -3920,7 +3977,7 @@ static void UpdateArcher(Ball* b, float dt)
         if (tip.x <= 0 || tip.x >= SCREEN_W || tip.y <= 0 || tip.y >= SCREEN_H ||
             ar->arrowPos.x <= 0 || ar->arrowPos.x >= SCREEN_W || ar->arrowPos.y <= 0 || ar->arrowPos.y >= SCREEN_H ||
             ar->arrowTravelled >= ARCHER_MAX_RANGE) {
-            CreateBurnZone(ClampScreen(tip, 14.0f), ARCHER_ZONE_RAD, b->team);
+            CreateBurnZone(ClampScreen(tip, 14.0f), ARCHER_ZONE_RAD, b->team, b->dmgMult);
             ar->arrowActive = false;
         }
     }
@@ -3937,7 +3994,7 @@ static Vector2 ComputeLaserEnd(Vector2 start, Vector2 dir)
     return V2Add(start, V2Mul(dir, tMin));
 }
 
-static void SpawnLaserTurret(Vector2 wallPos, Vector2 axisDir, int team)
+static void SpawnLaserTurret(Vector2 wallPos, Vector2 axisDir, int team, float dmgMult)
 {
     LaserTurret* t = &g_turrets[g_turretNext];
     g_turretNext = (g_turretNext + 1) % TURRET_MAX;
@@ -3946,6 +4003,7 @@ static void SpawnLaserTurret(Vector2 wallPos, Vector2 axisDir, int team)
         .dir = axisDir,
         .endPos = ComputeLaserEnd(wallPos, axisDir),
         .team = team,
+        .dmgMult = dmgMult,
         .shootTimer = TURRET_INTERVAL,
         .beamTimer = 0.0f,
         .active = true
@@ -3978,7 +4036,7 @@ static void ExplodePotion(PotionKind kind, Vector2 pos, int ownerIdx, bool direc
             for (int j = 0; j < g_ballCount; j++) {
                 Ball* e = &g_balls[j];
                 if (IsCombatBall(e) && e->team != w->team && Overlaps(pos, R, e))
-                    TakeDamage(e, 15);
+                    TakeDamageFrom(e, w, 15);
             }
         } break;
 
@@ -4009,9 +4067,11 @@ static void ExplodePotion(PotionKind kind, Vector2 pos, int ownerIdx, bool direc
             for (int j = 0; j < g_ballCount; j++) {
                 Ball* e = &g_balls[j];
                 if (IsCombatBall(e) && e->team != w->team && Overlaps(pos, R, e)) {
-                    TakeDamage(e, 10);
-                    if (IsCombatBall(e) && !e->frozen && !e->shocked && e->freezeImmune <= 0.0f)
+                    TakeDamageFrom(e, w, 10);
+                    if (IsCombatBall(e) && !e->frozen && !e->shocked && e->freezeImmune <= 0.0f) {
+                        e->freezeDmgMult = w->dmgMult;
                         Freeze(e, WITCH_FREEZE_TIME);
+                    }
                 }
             }
         } break;
@@ -4082,7 +4142,7 @@ static void UpdateEffects(float dt)
             if (!IsCombatBall(e) || e->team == kn->team) continue;
             float hitR = e->radius + 6.0f;
             if (V2DistSq(kn->pos, e->pos) <= hitR * hitR) {
-                TakeDamage(e, KUNAI_DMG);
+                TakeDamageScaled(e, KUNAI_DMG, kn->dmgMult);
                 kn->active = false;
                 break;
             }
@@ -4105,7 +4165,7 @@ static void UpdateEffects(float dt)
             if (!IsCombatBall(e) || e->team == tc->team) continue; // pierces teammates
             float hitR = e->radius + 9.0f;
             if (V2DistSq(tc->pos, e->pos) <= hitR * hitR) {
-                TakeDamage(e, TAROT_DMG);
+                TakeDamageScaled(e, TAROT_DMG, tc->dmgMult);
                 AddFx(tc->pos, 14.0f, tc->cardCol);
                 tc->active = false;
                 break;
@@ -4163,7 +4223,7 @@ static void UpdateEffects(float dt)
             if (!IsCombatBall(e) || e->team == gb->team) continue;
             float hitR = (float)e->radius + GUN_BULLET_RAD;
             if (V2DistSq(gb->pos, e->pos) <= hitR * hitR) {
-                TakeDamage(e, GUN_BULLET_DMG);
+                TakeDamageScaled(e, GUN_BULLET_DMG, gb->dmgMult);
                 gb->active = false;
                 break;
             }
@@ -4197,7 +4257,7 @@ static void UpdateEffects(float dt)
         }
 
         if (trigger) {
-            ExplodeCactusBomb(cb->pos, cb->team);
+            ExplodeCactusBomb(cb->pos, cb->team, cb->dmgMult);
             cb->active = false;
         }
     }
@@ -4232,7 +4292,7 @@ static void UpdateEffects(float dt)
             if (!IsCombatBall(e) || e->team == sp->team) continue;
             float hitR = e->radius + 5.0f;
             if (V2DistSq(sp->pos, e->pos) <= hitR * hitR) {
-                TakeDamage(e, CACTUS_SPIKE_DMG);
+                TakeDamageScaled(e, CACTUS_SPIKE_DMG, sp->dmgMult);
                 sp->active = false;
                 break;
             }
@@ -4261,7 +4321,7 @@ static void UpdateEffects(float dt)
             float hitR = e->radius + TORNADO_RADIUS;
             if (V2DistSq(wt->pos, e->pos) <= hitR * hitR) {
                 wt->hit[j] = true;
-                TakeDamage(e, TORNADO_DMG);
+                TakeDamageScaled(e, TORNADO_DMG, wt->dmgMult);
                 if (IsCombatBall(e)) StunWithWind(e, WIND_STUN_TIME);
                 AddFx(e->pos, TORNADO_RADIUS * 1.3f, COL_WIND);
                 // Tornado continues flying along its path to stun any other enemies in line
@@ -4291,7 +4351,7 @@ static void UpdateEffects(float dt)
                 float u = (abLenSq > 0.0001f) ? ClampF((ap.x * ab.x + ap.y * ab.y) / abLenSq, 0.0f, 1.0f) : 0.0f;
                 Vector2 closest = V2Add(t->pos, V2Mul(ab, u));
                 if (V2DistSq(e->pos, closest) <= (float)(e->radius * e->radius)) {
-                    TakeDamage(e, TURRET_LASER_DMG);
+                    TakeDamageScaled(e, TURRET_LASER_DMG, t->dmgMult);
                 }
             }
         }
@@ -4356,11 +4416,12 @@ static void UpdateEffects(float dt)
 
             if (z->kind == P_SLOW) {
                 e->slowYTimer = 2.0f;
-                if (!z->hit[j]) { z->hit[j] = true; TakeDamage(e, 5); }
+                if (!z->hit[j]) { z->hit[j] = true; TakeDamageScaled(e, 5, g_balls[z->ownerIdx].dmgMult); }
             } else if (z->kind == P_POISON && !z->hit[j]) {
                 z->hit[j] = true;
                 e->poisonTicks = 5;
                 e->poisonTick = 0.6f;
+                e->poisonDmgMult = g_balls[z->ownerIdx].dmgMult;
                 e->slowPTimer = 3.0f;
             }
         }
@@ -4388,7 +4449,7 @@ static void UpdateEffects(float dt)
             Ball* e = &g_balls[j];
             if (!IsCombatBall(e) || e->team == bz->team) continue;
             if (Overlaps(bz->pos, bz->radius, e)) {
-                ApplyArcherBurn(e);
+                ApplyArcherBurn(e, bz->dmgMult);
             }
         }
     }
@@ -4423,11 +4484,11 @@ static float GetEnemyHomingBias(const Ball* b)
         case TYPE_CELL:
         case TYPE_CHARGE:
         case TYPE_SQUIRE:
-            return WALL_HOMING_BIAS;
+            return WALL_HOMING_BIAS + b->homingBonus;
 
         // Gambler: base 5% + 5% per completed skill cast
         case TYPE_GAMBLER:
-            return WALL_HOMING_BIAS + b->gambler.bonusHoming;
+            return WALL_HOMING_BIAS + b->gambler.bonusHoming + b->homingBonus;
 
         // Balls with 0 initial contact dmg that deal contact/collision effect via skill,
         // plus Shackless, Range, Cactus, Psychic, and the 4 medieval melee balls (Knight, Cavalry, Executer, King): 5%
@@ -4443,7 +4504,7 @@ static float GetEnemyHomingBias(const Ball* b)
         case TYPE_CAVALRY:
         case TYPE_EXECUTER:
         case TYPE_KING:
-            return WALL_HOMING_BIAS;
+            return WALL_HOMING_BIAS + b->homingBonus;
 
         // All other balls with 0 contact damage: 0% enemy homing bias
         default:
@@ -4511,7 +4572,7 @@ static void BounceWalls(Ball* b, const Ball* enemy)
         b->touchingWall = true;
         b->wallBounceLockTimer = 0.14f;
         if (b->type == TYPE_LASER) {
-            SpawnLaserTurret(laserPos, laserDir, b->team);
+            SpawnLaserTurret(laserPos, laserDir, b->team, b->dmgMult);
         } else if (b->type == TYPE_SPIDER) {
             OnSpiderWallBounce(b, webPos);
         }
@@ -6091,8 +6152,8 @@ static void DrawCavalryDetails(const Ball* b)
 {
     Vector2 c = b->pos;
     float r = (float)b->radius;
-    Color horseBrown = { 128, 74, 36, 255 };
-    Color darkBrown  = { 78, 42, 18, 255 };
+    Color horseBrown = { 92, 46, 20, 255 };
+    Color darkBrown  = { 54, 26, 10, 255 };
     Color ironLight  = { 215, 224, 236, 255 };
     Color ironMid    = { 162, 174, 192, 255 };
     Color darkIron   = { 88, 96, 112, 255 };
@@ -6108,35 +6169,52 @@ static void DrawCavalryDetails(const Ball* b)
     // Iron barding armor ring around outer rim
     DrawRing(c, r * 0.74f, r - 1.5f, 0.0f, 360.0f, 24, darkIron);
 
-    // 1. Warhorse head & neck with overlapping steel crinet (neck armor plates)
-    DrawTri((Vector2){ c.x - 6.0f, c.y + 15.0f }, (Vector2){ c.x + 10.0f, c.y + 15.0f }, (Vector2){ c.x + 2.0f, c.y - 10.0f }, horseBrown);
-    Vector2 sTop  = { c.x + 4.0f, c.y - 10.0f };
-    Vector2 sNose = { c.x + 18.0f, c.y - 1.0f };
-    Vector2 sJaw  = { c.x + 6.0f, c.y + 4.0f };
-    DrawTri(sTop, sNose, sJaw, horseBrown);
-    DrawTri((Vector2){ c.x + 1.0f, c.y - 10.0f }, (Vector2){ c.x + 5.0f, c.y - 10.0f }, (Vector2){ c.x + 3.0f, c.y - 17.0f }, darkBrown);
+    // 1. Warhorse neck & sleeker forward-leaning head with thin black outline
+    Vector2 nBL = { c.x - 7.5f, c.y + 15.0f };
+    Vector2 nBR = { c.x + 7.5f, c.y + 15.0f };
+    Vector2 nTop = { c.x + 3.5f, c.y - 5.5f };
+    DrawTri(nBL, nBR, nTop, horseBrown);
+    DrawLineEx(nBL, nTop, 1.4f, BLACK);
+    DrawLineEx(nBR, nTop, 1.4f, BLACK);
 
-    // Overlapping segmented armor plates along the horse's neck ("giáp trên cổ ngựa cũng là các miếng giáp xếp chồng lên nhau")
+    // Horse head angled more horizontally and tilted slightly forward toward the lance
+    Vector2 sTop  = { c.x + 2.0f, c.y - 5.8f };
+    Vector2 sNose = { c.x + 19.5f, c.y - 0.5f };
+    Vector2 sJaw  = { c.x + 5.5f, c.y + 5.2f };
+    DrawTri(sTop, sNose, sJaw, horseBrown);
+    DrawLineEx(sTop, sNose, 1.4f, BLACK);
+    DrawLineEx(sNose, sJaw, 1.4f, BLACK);
+    DrawLineEx(sJaw, sTop, 1.2f, darkBrown);
+
+    // Horse ear
+    Vector2 earL = { c.x + 1.5f, c.y - 5.5f };
+    Vector2 earR = { c.x + 5.5f, c.y - 4.8f };
+    Vector2 earT = { c.x + 3.2f, c.y - 11.2f };
+    DrawTri(earL, earR, earT, darkBrown);
+    DrawLineEx(earL, earT, 1.2f, BLACK);
+    DrawLineEx(earR, earT, 1.2f, BLACK);
+
+    // Overlapping segmented armor plates along the horse's neck
     for (int p = 0; p < 4; p++) {
-        float py = c.y - 7.0f + p * 4.8f;
-        float px = c.x - 1.0f - p * 1.1f;
-        Vector2 pL = { px - 6.5f, py + 2.5f };
-        Vector2 pR = { px + 6.5f, py + 1.0f };
-        Vector2 pT = { px - 1.0f, py - 3.2f };
+        float py = c.y - 3.0f + p * 4.4f;
+        float px = c.x - 1.5f - p * 1.1f;
+        Vector2 pL = { px - 6.0f, py + 2.2f };
+        Vector2 pR = { px + 6.0f, py + 0.8f };
+        Vector2 pT = { px - 1.0f, py - 2.8f };
         DrawTri(pL, pR, pT, (p & 1) ? ironMid : ironLight);
-        DrawLineEx(pL, pR, 1.5f, darkIron);
+        DrawLineEx(pL, pR, 1.4f, darkIron);
         DrawLineEx(pL, pT, 1.2f, BLACK);
     }
-    // Armored chanfron on horse's forehead/snout + eye
-    DrawLineEx((Vector2){ c.x + 4.5f, c.y - 10.5f }, (Vector2){ c.x + 16.5f, c.y - 2.0f }, 3.8f, ironLight);
-    DrawCircleV((Vector2){ c.x + 6.5f, c.y - 5.5f }, 1.8f, WHITE);
-    DrawCircleV((Vector2){ c.x + 7.0f, c.y - 5.5f }, 1.0f, BLACK);
+    // Horse eye (no nose armor)
+    DrawCircleV((Vector2){ c.x + 8.0f, c.y - 1.6f }, 1.8f, WHITE);
+    DrawCircleV((Vector2){ c.x + 8.5f, c.y - 1.6f }, 1.0f, BLACK);
 
-    // 2. Knight helmet perched above/behind with a flowing red feather plume ("vẽ thêm một chiếc mũ có lông màu đỏ như hình trên")
-    Vector2 helmC = { c.x - 8.0f, c.y - 9.0f };
+    // 2. Knight helmet perched above/behind, larger for better proportion with horse head
+    Vector2 helmC = { c.x - 9.0f, c.y - 10.5f };
+    float helmR = 9.2f;
     // Flowing red plume trailing backward from the top of the helmet (3 layered feather triangles)
     float plumeWave = sinf((float)GetTime() * 8.0f) * 1.8f;
-    Vector2 plumeRoot = { helmC.x - 1.0f, helmC.y - 7.5f };
+    Vector2 plumeRoot = { helmC.x - 1.0f, helmC.y - helmR + 0.5f };
     DrawTri(plumeRoot, (Vector2){ plumeRoot.x - 16.0f, plumeRoot.y - 5.0f + plumeWave },
             (Vector2){ plumeRoot.x - 9.0f,  plumeRoot.y + 2.0f + plumeWave }, plumeDark);
     DrawTri(plumeRoot, (Vector2){ plumeRoot.x - 19.0f, plumeRoot.y - 1.5f + plumeWave },
@@ -6146,13 +6224,13 @@ static void DrawCavalryDetails(const Ball* b)
     DrawLineEx(plumeRoot, (Vector2){ plumeRoot.x - 18.0f, plumeRoot.y - 2.0f + plumeWave }, 1.3f, BLACK);
 
     // Shining steel knight helmet with pointed visor
-    DrawCircleV(helmC, 7.5f, ironMid);
-    DrawCircleSector(helmC, 7.5f, -110.0f, 70.0f, 12, ironLight);
-    DrawTri((Vector2){ helmC.x + 2.0f, helmC.y - 5.0f },
-            (Vector2){ helmC.x + 10.5f, helmC.y - 0.5f },
-            (Vector2){ helmC.x + 2.0f, helmC.y + 4.5f }, ironLight);
-    DrawLineEx((Vector2){ helmC.x + 2.0f, helmC.y - 1.5f }, (Vector2){ helmC.x + 8.5f, helmC.y - 0.5f }, 2.0f, BLACK); // visor slit
-    DrawCircleLines((int)helmC.x, (int)helmC.y, 7.5f, BLACK);
+    DrawCircleV(helmC, helmR, ironMid);
+    DrawCircleSector(helmC, helmR, -110.0f, 70.0f, 12, ironLight);
+    DrawTri((Vector2){ helmC.x + 2.5f, helmC.y - 6.0f },
+            (Vector2){ helmC.x + 12.2f, helmC.y - 0.5f },
+            (Vector2){ helmC.x + 2.5f, helmC.y + 5.5f }, ironLight);
+    DrawLineEx((Vector2){ helmC.x + 2.5f, helmC.y - 1.8f }, (Vector2){ helmC.x + 10.0f, helmC.y - 0.5f }, 2.2f, BLACK); // visor slit
+    DrawCircleLines((int)helmC.x, (int)helmC.y, helmR, BLACK);
 
     // 3. Conical jousting lance built from stacked triangles:
     // round base attached to the handle, tapering down to a sharp tip ("dùng các hình tam giác xếp chồng lên nhau,
@@ -7422,10 +7500,7 @@ static void DrawPopups(void)
     }
 }
 
-// ======================= RARITY, GACHA & ADMIN SYSTEM =======================
-#define ADMIN_PASSWORD      "104080"
-#define SAVE_FILE_PATH      "ballvball_save_v4.dat"
-
+// ======================= RARITY, GACHA, TICKETS & UPGRADE SYSTEM =======================
 // Rarity tier assigned to each of the 33 balls:
 // Common (Green):         BURST, ELECTRIC, WIND, CHARGE, WEB, EXECUTER, SQUIRE
 // Uncommon (Sky Blue):    VERITY, DEVIL, ICE, NINJA, CELL, LASER, TRAIN, RANGE
@@ -7478,17 +7553,26 @@ static Color RarityColor(BallRarity r)
         case RARITY_COMMON:    return (Color){ 45, 195, 65, 255 };   // green
         case RARITY_UNCOMMON:  return (Color){ 90, 190, 255, 255 };  // lighter sky blue
         case RARITY_RARE:      return (Color){ 255, 215, 35, 255 };  // yellow
-        case RARITY_MYTHIC:    return (Color){ 185, 45, 255, 255 };  // bright purple (tím tươi)
+        case RARITY_MYTHIC:    return (Color){ 185, 45, 255, 255 };  // bright purple
         case RARITY_LEGENDARY: return (Color){ 255, 35, 25, 255 };   // bright legendary red
         default:               return LIGHTGRAY;
     }
 }
 
-static bool g_isAdmin = false;
-static bool g_unlocked[TYPE_COUNT];
-static int  g_playerSpins = 5;
-static int  g_botClassPicks[RARITY_COUNT] = { 0 };
-static int  g_botTotalPicks = 0;
+static bool  g_unlocked[TYPE_COUNT];
+static int   g_ballCopies[TYPE_COUNT];
+static int   g_ballUpgradeLv[TYPE_COUNT];
+static int   g_playerTickets = 15; // New player starter gift: 15 tickets
+static int   g_botWinStreak[4] = { 0, 0, 0, 0 };
+static int   g_botTotalWins = 0;   // Tracks first 15 VS BOT wins (+20 tickets each)
+static int   g_pityRare = 0;       // 60 pulls -> next (61st) guaranteed Rare
+static int   g_pityMythic = 0;     // 500 pulls -> next (501st) guaranteed Mythic
+static int   g_pityLegend = 0;     // 1400 pulls -> next (1401st) guaranteed Legendary
+static float g_online15mSec = 0.0f; // 900s -> +50 tickets
+static float g_online1hSec = 0.0f;  // 3600s -> +300 tickets
+static bool  g_challengerActive = false;
+static int   g_challengerWins = 0;
+static BotDifficulty g_challengerCurDiff = BOT_IMPOSSIBLE;
 
 static void BuildSaveCandidatePaths(char paths[3][512], int* outCount)
 {
@@ -7510,15 +7594,19 @@ static bool WriteProgressToFile(const char* path)
 {
     FILE* f = fopen(path, "w");
     if (!f) return false;
-    fprintf(f, "BALLVBALL_SAVE_V5\n");
-    fprintf(f, "SPINS %d\n", g_playerSpins);
-    fprintf(f, "BOT_TOTAL %d\n", g_botTotalPicks);
-    fprintf(f, "BOT_PICKS");
-    for (int r = 0; r < RARITY_COUNT; r++) fprintf(f, " %d", g_botClassPicks[r]);
-    fprintf(f, "\n");
-    fprintf(f, "UNLOCKED %d\n", (int)TYPE_COUNT);
+    fprintf(f, "BALLVBALL_SAVE_V6\n");
+    fprintf(f, "TICKETS %d\n", g_playerTickets);
+    fprintf(f, "BOT_TOTAL_WINS %d\n", g_botTotalWins);
+    fprintf(f, "BOT_STREAKS %d %d %d %d\n",
+            g_botWinStreak[0], g_botWinStreak[1], g_botWinStreak[2], g_botWinStreak[3]);
+    fprintf(f, "PITY %d %d %d\n", g_pityRare, g_pityMythic, g_pityLegend);
+    fprintf(f, "ONLINE_TIMERS %.2f %.2f\n", g_online15mSec, g_online1hSec);
+    fprintf(f, "CHALLENGER %d %d %d\n",
+            g_challengerActive ? 1 : 0, g_challengerWins, (int)g_challengerCurDiff);
+    fprintf(f, "BALLS %d\n", (int)TYPE_COUNT);
     for (int i = 0; i < TYPE_COUNT; i++) {
-        fprintf(f, "%d %d\n", i, g_unlocked[i] ? 1 : 0);
+        fprintf(f, "%d %d %d %d\n",
+                i, g_unlocked[i] ? 1 : 0, g_ballCopies[i], g_ballUpgradeLv[i]);
     }
     fflush(f);
     fclose(f);
@@ -7531,128 +7619,119 @@ static bool ReadProgressFromFile(const char* path)
     if (!f) return false;
 
     char header[64] = { 0 };
-    if (fscanf(f, "%63s", header) != 1 || strcmp(header, "BALLVBALL_SAVE_V5") != 0) {
+    if (fscanf(f, "%63s", header) != 1) {
         fclose(f);
         return false;
     }
 
-    bool tempUnlocked[TYPE_COUNT];
-    memset(tempUnlocked, 0, sizeof(tempUnlocked));
-    tempUnlocked[TYPE_BURST] = true;
-    int tempSpins = 5;
-    int tempBotTotal = 0;
-    int tempBotPicks[RARITY_COUNT] = { 0 };
+    if (strcmp(header, "BALLVBALL_SAVE_V6") == 0) {
+        bool tempUnlocked[TYPE_COUNT];
+        int  tempCopies[TYPE_COUNT];
+        int  tempUpgrades[TYPE_COUNT];
+        memset(tempUnlocked, 0, sizeof(tempUnlocked));
+        memset(tempCopies, 0, sizeof(tempCopies));
+        memset(tempUpgrades, 0, sizeof(tempUpgrades));
+        tempUnlocked[TYPE_BURST] = true;
+        tempCopies[TYPE_BURST] = 1;
 
-    char key[64];
-    while (fscanf(f, "%63s", key) == 1) {
-        if (strcmp(key, "SPINS") == 0) {
-            fscanf(f, "%d", &tempSpins);
-        } else if (strcmp(key, "BOT_TOTAL") == 0) {
-            fscanf(f, "%d", &tempBotTotal);
-        } else if (strcmp(key, "BOT_PICKS") == 0) {
-            for (int r = 0; r < RARITY_COUNT; r++) {
-                fscanf(f, "%d", &tempBotPicks[r]);
+        int tempTickets = 15;
+        int tempBotWins = 0;
+        int tempStreaks[4] = { 0, 0, 0, 0 };
+        int tempPR = 0, tempPM = 0, tempPL = 0;
+        float tempT15 = 0.0f, tempT1h = 0.0f;
+        int tempChAct = 0, tempChWins = 0, tempChDiff = (int)BOT_IMPOSSIBLE;
+
+        char key[64];
+        while (fscanf(f, "%63s", key) == 1) {
+            if (strcmp(key, "TICKETS") == 0) {
+                fscanf(f, "%d", &tempTickets);
+            } else if (strcmp(key, "BOT_TOTAL_WINS") == 0) {
+                fscanf(f, "%d", &tempBotWins);
+            } else if (strcmp(key, "BOT_STREAKS") == 0) {
+                fscanf(f, "%d %d %d %d", &tempStreaks[0], &tempStreaks[1], &tempStreaks[2], &tempStreaks[3]);
+            } else if (strcmp(key, "PITY") == 0) {
+                fscanf(f, "%d %d %d", &tempPR, &tempPM, &tempPL);
+            } else if (strcmp(key, "ONLINE_TIMERS") == 0) {
+                fscanf(f, "%f %f", &tempT15, &tempT1h);
+            } else if (strcmp(key, "CHALLENGER") == 0) {
+                fscanf(f, "%d %d %d", &tempChAct, &tempChWins, &tempChDiff);
+            } else if (strcmp(key, "BALLS") == 0) {
+                int savedCount = 0;
+                if (fscanf(f, "%d", &savedCount) == 1) {
+                    for (int i = 0; i < savedCount; i++) {
+                        int idx = -1, u = 0, cp = 0, lv = 0;
+                        if (fscanf(f, "%d %d %d %d", &idx, &u, &cp, &lv) == 4) {
+                            if (idx >= 0 && idx < TYPE_COUNT) {
+                                tempUnlocked[idx] = (u != 0);
+                                tempCopies[idx] = (cp >= 0) ? cp : 0;
+                                tempUpgrades[idx] = (lv >= 0) ? lv : 0;
+                            }
+                        }
+                    }
+                }
             }
-        } else if (strcmp(key, "UNLOCKED") == 0) {
-            int savedCount = 0;
-            if (fscanf(f, "%d", &savedCount) == 1) {
-                for (int i = 0; i < savedCount; i++) {
-                    int idx = -1, val = 0;
-                    if (fscanf(f, "%d %d", &idx, &val) == 2) {
-                        if (idx >= 0 && idx < TYPE_COUNT) {
+        }
+        fclose(f);
+
+        tempUnlocked[TYPE_BURST] = true;
+        memcpy(g_unlocked, tempUnlocked, sizeof(g_unlocked));
+        memcpy(g_ballCopies, tempCopies, sizeof(g_ballCopies));
+        memcpy(g_ballUpgradeLv, tempUpgrades, sizeof(g_ballUpgradeLv));
+        g_playerTickets = (tempTickets >= 0) ? tempTickets : 0;
+        g_botTotalWins = (tempBotWins >= 0) ? tempBotWins : 0;
+        for (int i = 0; i < 4; i++) g_botWinStreak[i] = (tempStreaks[i] >= 0) ? tempStreaks[i] : 0;
+        g_pityRare = (tempPR >= 0) ? tempPR : 0;
+        g_pityMythic = (tempPM >= 0) ? tempPM : 0;
+        g_pityLegend = (tempPL >= 0) ? tempPL : 0;
+        g_online15mSec = ClampF(tempT15, 0.0f, 900.0f);
+        g_online1hSec = ClampF(tempT1h, 0.0f, 3600.0f);
+        g_challengerActive = (tempChAct != 0);
+        g_challengerWins = (tempChWins >= 0 && tempChWins < 5) ? tempChWins : 0;
+        g_challengerCurDiff = (tempChDiff == (int)BOT_HARD) ? BOT_HARD : BOT_IMPOSSIBLE;
+        return true;
+    }
+
+    if (strcmp(header, "BALLVBALL_SAVE_V5") == 0) {
+        bool tempUnlocked[TYPE_COUNT];
+        memset(tempUnlocked, 0, sizeof(tempUnlocked));
+        tempUnlocked[TYPE_BURST] = true;
+        char key[64];
+        while (fscanf(f, "%63s", key) == 1) {
+            if (strcmp(key, "UNLOCKED") == 0) {
+                int savedCount = 0;
+                if (fscanf(f, "%d", &savedCount) == 1) {
+                    for (int i = 0; i < savedCount; i++) {
+                        int idx = -1, val = 0;
+                        if (fscanf(f, "%d %d", &idx, &val) == 2 && idx >= 0 && idx < TYPE_COUNT) {
                             tempUnlocked[idx] = (val != 0);
                         }
                     }
                 }
             }
         }
-    }
-    fclose(f);
-
-    tempUnlocked[TYPE_BURST] = true;
-    memcpy(g_unlocked, tempUnlocked, sizeof(g_unlocked));
-    g_playerSpins = (tempSpins >= 0) ? tempSpins : 0;
-    g_botTotalPicks = (tempBotTotal >= 0) ? tempBotTotal : 0;
-    memcpy(g_botClassPicks, tempBotPicks, sizeof(g_botClassPicks));
-    return true;
-}
-
-static bool TryMigrateLegacyBinarySave(void)
-{
-    static const char* const legacyNames[] = {
-        "ballvball_save_v4.dat",
-        "ballvball_save_v3.dat",
-        "ballvball_save_v2.dat",
-        "ballvball_save.dat"
-    };
-    static const int legacyBallCounts[] = { TYPE_COUNT, 26, 24, 20 };
-
-    for (int n = 0; n < 4; n++) {
-        FILE* f = fopen(legacyNames[n], "rb");
-        if (!f) {
-            const char* appDir = GetApplicationDirectory();
-            if (appDir && appDir[0]) {
-                char fullPath[512];
-                snprintf(fullPath, sizeof(fullPath), "%s%s", appDir, legacyNames[n]);
-                f = fopen(fullPath, "rb");
-            }
-        }
-        if (!f) continue;
-
-        fseek(f, 0, SEEK_END);
-        long fsize = ftell(f);
-        fseek(f, 0, SEEK_SET);
-
-        for (int c = 0; c < 4; c++) {
-            int bCount = legacyBallCounts[c];
-            long expectedMin = (long)(bCount * sizeof(bool) + sizeof(int));
-            if (fsize >= expectedMin && bCount <= TYPE_COUNT) {
-                bool tempU[TYPE_COUNT];
-                memset(tempU, 0, sizeof(tempU));
-                int tempSpins = 5;
-                fseek(f, 0, SEEK_SET);
-                if (fread(tempU, sizeof(bool), (size_t)bCount, f) == (size_t)bCount &&
-                    fread(&tempSpins, sizeof(int), 1, f) == 1) {
-                    int tempBotPicks[RARITY_COUNT] = { 0 };
-                    int tempBotTotal = 0;
-                    if (fread(tempBotPicks, sizeof(tempBotPicks), 1, f) == 1 &&
-                        fread(&tempBotTotal, sizeof(tempBotTotal), 1, f) == 1) {
-                        memcpy(g_botClassPicks, tempBotPicks, sizeof(g_botClassPicks));
-                        g_botTotalPicks = (tempBotTotal >= 0) ? tempBotTotal : 0;
-                    }
-                    memcpy(g_unlocked, tempU, sizeof(g_unlocked));
-                    g_unlocked[TYPE_BURST] = true;
-                    if (tempSpins >= 0 && tempSpins <= 100000) g_playerSpins = tempSpins;
-                    fclose(f);
-                    return true;
-                }
-            }
-        }
         fclose(f);
+        tempUnlocked[TYPE_BURST] = true;
+        memcpy(g_unlocked, tempUnlocked, sizeof(g_unlocked));
+        for (int i = 0; i < TYPE_COUNT; i++) {
+            g_ballCopies[i] = g_unlocked[i] ? 1 : 0;
+            g_ballUpgradeLv[i] = 0;
+        }
+        g_playerTickets = 15;
+        return true;
     }
+
+    fclose(f);
     return false;
 }
 
 static void SaveProgress(void)
 {
     g_unlocked[TYPE_BURST] = true;
-
     char paths[3][512];
     int pathCount = 0;
     BuildSaveCandidatePaths(paths, &pathCount);
     for (int i = 0; i < pathCount; i++) {
         WriteProgressToFile(paths[i]);
-    }
-
-    // Keep binary save file in sync as well
-    FILE* f = fopen(SAVE_FILE_PATH, "wb");
-    if (f) {
-        fwrite(g_unlocked, sizeof(g_unlocked), 1, f);
-        fwrite(&g_playerSpins, sizeof(g_playerSpins), 1, f);
-        fwrite(g_botClassPicks, sizeof(g_botClassPicks), 1, f);
-        fwrite(&g_botTotalPicks, sizeof(g_botTotalPicks), 1, f);
-        fflush(f);
-        fclose(f);
     }
 }
 
@@ -7669,75 +7748,45 @@ static void LoadProgress(void)
         }
     }
 
-    if (TryMigrateLegacyBinarySave()) {
-        SaveProgress();
-        return;
-    }
-
-    // Default new-player state: ONLY BURST is unlocked initially; all other balls are locked + 5 Gacha spins
+    // Default new-player state: ONLY BURST unlocked + 15 starter tickets
     memset(g_unlocked, 0, sizeof(g_unlocked));
+    memset(g_ballCopies, 0, sizeof(g_ballCopies));
+    memset(g_ballUpgradeLv, 0, sizeof(g_ballUpgradeLv));
     g_unlocked[TYPE_BURST] = true;
-    g_playerSpins = 5;
-    memset(g_botClassPicks, 0, sizeof(g_botClassPicks));
-    g_botTotalPicks = 0;
+    g_ballCopies[TYPE_BURST] = 1;
+    g_playerTickets = 15;
+    memset(g_botWinStreak, 0, sizeof(g_botWinStreak));
+    g_botTotalWins = 0;
+    g_pityRare = 0;
+    g_pityMythic = 0;
+    g_pityLegend = 0;
+    g_online15mSec = 0.0f;
+    g_online1hSec = 0.0f;
+    g_challengerActive = false;
+    g_challengerWins = 0;
     SaveProgress();
 }
 
-// Computes Bot's current dynamic rarity probabilities (in %) based on how frequently each class was picked:
-// Starting distribution (Legendary - Mythic - Rare - Uncommon - Common): 8% - 17% - 20% - 25% - 30%
-// Target shifted distribution:                                          17% - 25% - 28% - 15% - 15%
-// Classes picked more frequently have their probability reduced; classes picked less frequently increase.
-static void ComputeBotClassRates(float outPct[RARITY_COUNT])
+// Rolls a Bot ball using exact difficulty rarity rates (Common, Uncommon, Rare, Mythic, Legendary)
+static BallType RollBotBallForDifficulty(BotDifficulty diff)
 {
-    // Order: RARITY_COMMON(0), RARITY_UNCOMMON(1), RARITY_RARE(2), RARITY_MYTHIC(3), RARITY_LEGENDARY(4)
-    static const float startRates[RARITY_COUNT]  = { 30.0f, 25.0f, 20.0f, 17.0f,  8.0f };
-    static const float targetRates[RARITY_COUNT] = { 15.0f, 15.0f, 28.0f, 25.0f, 17.0f };
-    static const float minBounds[RARITY_COUNT]   = { 15.0f, 15.0f, 20.0f, 17.0f,  8.0f };
-    static const float maxBounds[RARITY_COUNT]   = { 30.0f, 25.0f, 28.0f, 25.0f, 17.0f };
-
-    // Progression factor toward the 17-25-28-15-15 distribution as Bot plays more matches
-    float progress = ClampF((float)g_botTotalPicks / 16.0f, 0.0f, 1.0f);
-    float raw[RARITY_COUNT];
-    float sum = 0.0f;
-
-    for (int r = 0; r < RARITY_COUNT; r++) {
-        float base = startRates[r] + (targetRates[r] - startRates[r]) * progress;
-        if (g_botTotalPicks > 0) {
-            float actualFreq = (float)g_botClassPicks[r] / (float)g_botTotalPicks;
-            float expectedFreq = base * 0.01f;
-            // Picked more than expected -> decrease rate; picked less than expected -> increase rate
-            float freqDelta = (expectedFreq - actualFreq) * 45.0f;
-            base = ClampF(base + freqDelta, minBounds[r], maxBounds[r]);
-        }
-        raw[r] = base;
-        sum += base;
-    }
-
-    for (int r = 0; r < RARITY_COUNT; r++) {
-        outPct[r] = (sum > 0.001f) ? (raw[r] * 100.0f / sum) : startRates[r];
-    }
-}
-
-static BallType RollBotBall(void)
-{
-    float pct[RARITY_COUNT];
-    ComputeBotClassRates(pct);
-
-    float roll = (float)GetRandomValue(0, 10000) / 100.0f;
-    float accum = 0.0f;
+    static const int diffRates[4][RARITY_COUNT] = {
+        { 30, 25, 20, 17,  8 }, // EASY:       L 8  - M 17 - R 20 - U 25 - C 30
+        { 18, 22, 30, 20, 10 }, // MEDIUM:     L 10 - M 20 - R 30 - U 22 - C 18
+        { 13, 20, 33, 22, 12 }, // HARD:       L 12 - M 22 - R 33 - U 20 - C 13
+        { 13, 20, 33, 22, 12 }  // IMPOSSIBLE: same as HARD
+    };
+    int dIdx = (diff >= 0 && diff <= BOT_IMPOSSIBLE) ? (int)diff : 0;
+    int roll = GetRandomValue(1, 100);
+    int accum = 0;
     BallRarity chosenRarity = RARITY_COMMON;
     for (int r = 0; r < RARITY_COUNT; r++) {
-        accum += pct[r];
+        accum += diffRates[dIdx][r];
         if (roll <= accum || r == RARITY_COUNT - 1) {
             chosenRarity = (BallRarity)r;
             break;
         }
     }
-
-    // Update Bot's pick frequency history for this rarity class
-    g_botClassPicks[chosenRarity]++;
-    g_botTotalPicks++;
-    SaveProgress();
 
     BallType pool[TYPE_COUNT];
     int poolCount = 0;
@@ -7750,19 +7799,56 @@ static BallType RollBotBall(void)
     return pool[GetRandomValue(0, poolCount - 1)];
 }
 
-static inline bool IsBallAvailable(BallType t)
+static int CalcWinStreakBonusPct(int streakBeforeWin)
 {
-    return g_isAdmin || g_unlocked[t];
+    if (streakBeforeWin >= 20) return 105; // 21st+ win
+    if (streakBeforeWin >= 15) return 75;  // 16th..20th win
+    if (streakBeforeWin >= 10) return 50;  // 11th..15th win
+    if (streakBeforeWin >= 5)  return 25;  // 6th..10th win
+    if (streakBeforeWin >= 3)  return 10;  // 4th..5th win
+    return 0;
 }
 
-// When the player has 4 or more available balls and enters VS BOT mode,
+static void ApplyMatchBotAndUpgradeStats(Ball* b, bool isBotBall, BotDifficulty botDiff)
+{
+    if (!b) return;
+    if (!isBotBall) {
+        int lv = g_ballUpgradeLv[b->type];
+        if (lv > 0) {
+            b->hp += lv * 5;
+            b->maxHp += lv * 5;
+            b->dmgMult *= (1.0f + 0.025f * (float)lv);
+        }
+    } else {
+        if (botDiff == BOT_HARD) {
+            b->hp = 110;
+            b->maxHp = 110;
+            b->dmgMult *= 1.15f;
+            b->homingBonus += 0.05f;
+        } else if (botDiff == BOT_IMPOSSIBLE) {
+            b->hp = 120;
+            b->maxHp = 120;
+            b->dmgMult *= 1.25f;
+            b->homingBonus += 0.10f;
+            b->dodgeChance = 0.05f;
+            b->dmgRedChance = 0.10f;
+        }
+    }
+}
+
+static inline bool IsBallAvailable(BallType t, bool sandboxAllUnlocked)
+{
+    return sandboxAllUnlocked || g_unlocked[t];
+}
+
+// When the player has 4 or more available balls and enters VS BOT / Challenger mode,
 // randomly draw 3 distinct balls from their available collection so they pick 1 of the 3.
 static bool RollVsBotPlayerDraft(BallType outDraft[3])
 {
     BallType pool[TYPE_COUNT];
     int poolCount = 0;
     for (int i = 0; i < TYPE_COUNT; i++) {
-        if (IsBallAvailable((BallType)i)) {
+        if (g_unlocked[i]) {
             pool[poolCount++] = (BallType)i;
         }
     }
@@ -7778,39 +7864,48 @@ static bool RollVsBotPlayerDraft(BallType outDraft[3])
     return true;
 }
 
-// Per-ball Gacha weight ranges by rarity tier:
-// - Common:    60% - 75% per ball
-// - Uncommon:  20% - 30% per ball
-// - Rare:       7% - 15% per ball
-// - Mythic:     3% -  5% per ball
-// - Legendary:  1% -  2% per ball
-// Duplicates are allowed.
+// Gacha Pool:
+// Total rarity rates: Common 55%, Uncommon 29%, Rare 10%, Mythic 5%, Legendary 1%
+// Divided equally among all balls in that rarity.
+// Pity: 60 pulls -> 61st Rare; 500 pulls -> 501st Mythic; 1400 pulls -> 1401st Legendary.
 static BallType RollGachaBall(void)
 {
-    float weights[TYPE_COUNT];
-    float totalWeight = 0.0f;
+    BallRarity chosenRarity = RARITY_COMMON;
 
+    if (g_pityLegend >= 1400) {
+        chosenRarity = RARITY_LEGENDARY;
+    } else if (g_pityMythic >= 500) {
+        chosenRarity = RARITY_MYTHIC;
+    } else if (g_pityRare >= 60) {
+        chosenRarity = RARITY_RARE;
+    } else {
+        int roll = GetRandomValue(1, 10000);
+        if (roll <= 5500)      chosenRarity = RARITY_COMMON;    // 55.00%
+        else if (roll <= 8400) chosenRarity = RARITY_UNCOMMON;  // 29.00%
+        else if (roll <= 9400) chosenRarity = RARITY_RARE;      // 10.00%
+        else if (roll <= 9900) chosenRarity = RARITY_MYTHIC;    //  5.00%
+        else                   chosenRarity = RARITY_LEGENDARY; //  1.00%
+    }
+
+    if (chosenRarity == RARITY_LEGENDARY) {
+        g_pityLegend = 0; g_pityMythic = 0; g_pityRare = 0;
+    } else if (chosenRarity == RARITY_MYTHIC) {
+        g_pityLegend++; g_pityMythic = 0; g_pityRare = 0;
+    } else if (chosenRarity == RARITY_RARE) {
+        g_pityLegend++; g_pityMythic++; g_pityRare = 0;
+    } else {
+        g_pityLegend++; g_pityMythic++; g_pityRare++;
+    }
+
+    BallType pool[TYPE_COUNT];
+    int poolCount = 0;
     for (int i = 0; i < TYPE_COUNT; i++) {
-        float w = 1.0f;
-        switch (g_ballRarity[i]) {
-            case RARITY_COMMON:    w = (float)GetRandomValue(600, 750) * 0.1f; break; // 60%..75%
-            case RARITY_UNCOMMON:  w = (float)GetRandomValue(200, 300) * 0.1f; break; // 20%..30%
-            case RARITY_RARE:      w = (float)GetRandomValue(70,  150) * 0.1f; break; //  7%..15%
-            case RARITY_MYTHIC:    w = (float)GetRandomValue(30,   50) * 0.1f; break; //  3%..5%
-            case RARITY_LEGENDARY: w = (float)GetRandomValue(10,   20) * 0.1f; break; //  1%..2%
-            default:               w = 10.0f; break;
+        if (g_ballRarity[i] == chosenRarity) {
+            pool[poolCount++] = (BallType)i;
         }
-        weights[i] = w;
-        totalWeight += w;
     }
-
-    float pick = ((float)GetRandomValue(0, 100000) / 100000.0f) * totalWeight;
-    float accum = 0.0f;
-    for (int i = 0; i < TYPE_COUNT; i++) {
-        accum += weights[i];
-        if (pick <= accum) return (BallType)i;
-    }
-    return (BallType)(TYPE_COUNT - 1);
+    if (poolCount == 0) return TYPE_BURST;
+    return pool[GetRandomValue(0, poolCount - 1)];
 }
 
 // Renders a faithful visual preview of any ball type inside UI cards (Select Menu & Gacha Machine)
@@ -7904,21 +7999,23 @@ int main(void)
     GameState state = MENU_MODE;
     bool is2v2 = false;
     bool isVsBot = false;
+    bool isChallenger = false;
+    BotDifficulty selectedBotDiff = BOT_EASY;
+    InventoryTab invTab = INV_TAB_INVENTORY;
     bool vsBotDraftActive = false;
     BallType vsBotDraft[3] = { TYPE_BURST, TYPE_BURST, TYPE_BURST };
     bool isPaused = false;
+    bool surrenderConfirm = false;
     int selectStep = 0;
     int totalSlots = 2;
     BallType pickedTypes[4] = { 0 };
     float countdownTimer = 3.0f;
+    float matchTimer = 0.0f;
     int winningTeam = -1;
     bool matchRewardGiven = false;
-    int lastEarnedSpins = 2;
-
-    // Admin login input state
-    char adminInput[24] = { 0 };
-    int adminInputLen = 0;
-    float loginErrorTimer = 0.0f;
+    int lastEarnedTickets = 0;
+    int lastStreakBonusPct = 0;
+    bool lastFirst15Bonus = false;
 
     // Gacha wheel animation state
     bool gachaRolling = false;
@@ -7970,21 +8067,24 @@ int main(void)
     const float totalGridH = selectRows * cardSize + (selectRows - 1) * cardGapY + 16.0f;
     const float maxSelectScroll = fmaxf(0.0f, totalGridH - selectViewport.height);
     float selectScrollY = 0.0f;
+    float invScrollY = 0.0f;
     bool draggingScrollbar = false;
 
-    const Rectangle btnMode1v1    = { SCREEN_W / 2.0f - 250.0f, 165.0f, 150.0f, 58.0f };
-    const Rectangle btnMode2v2    = { SCREEN_W / 2.0f - 75.0f,  165.0f, 150.0f, 58.0f };
-    const Rectangle btnModeVsBot  = { SCREEN_W / 2.0f + 100.0f, 165.0f, 150.0f, 58.0f };
-    const Rectangle btnBot1v1     = { SCREEN_W / 2.0f - 185.0f, 195.0f, 170.0f, 64.0f };
-    const Rectangle btnBot2v2     = { SCREEN_W / 2.0f + 15.0f,  195.0f, 170.0f, 64.0f };
-    const Rectangle btnOpenGacha  = { SCREEN_W / 2.0f - 110.0f, 250.0f, 220.0f, 52.0f };
-    const Rectangle btnRoleToggle = { 15.0f, 10.0f, 165.0f, 32.0f };
-    const Rectangle btnAdminUnlock= { 190.0f, 10.0f, 135.0f, 32.0f };
-    const Rectangle btnAdminLock  = { 335.0f, 10.0f, 135.0f, 32.0f };
-    const Rectangle btnAdminSpins = { 480.0f, 10.0f, 110.0f, 32.0f };
-    const Rectangle btnRollNow    = { SCREEN_W / 2.0f - 100.0f, 345.0f, 200.0f, 52.0f };
-    const Rectangle btnTopRight   = { SCREEN_W - 105, 10, 90, 30 };
-    const Rectangle btnPause      = { SCREEN_W - 205, 10, 90, 30 };
+    const Rectangle btnModeSandbox   = { SCREEN_W / 2.0f - 255.0f, 142.0f, 155.0f, 56.0f };
+    const Rectangle btnModeVsBot     = { SCREEN_W / 2.0f - 77.5f,  142.0f, 155.0f, 56.0f };
+    const Rectangle btnModeChall     = { SCREEN_W / 2.0f + 100.0f, 142.0f, 155.0f, 56.0f };
+    const Rectangle btnOpenGacha     = { SCREEN_W / 2.0f - 170.0f, 218.0f, 155.0f, 56.0f };
+    const Rectangle btnOpenInv       = { SCREEN_W / 2.0f + 15.0f,  218.0f, 155.0f, 56.0f };
+    const Rectangle btnSandbox1v1    = { SCREEN_W / 2.0f - 185.0f, 200.0f, 170.0f, 64.0f };
+    const Rectangle btnSandbox2v2    = { SCREEN_W / 2.0f + 15.0f,  200.0f, 170.0f, 64.0f };
+    const Rectangle btnBot1v1        = { SCREEN_W / 2.0f - 185.0f, 325.0f, 170.0f, 56.0f };
+    const Rectangle btnBot2v2        = { SCREEN_W / 2.0f + 15.0f,  325.0f, 170.0f, 56.0f };
+    const Rectangle btnChallAction   = { SCREEN_W / 2.0f - 140.0f, 285.0f, 280.0f, 58.0f };
+    const Rectangle btnRollNow       = { SCREEN_W / 2.0f - 100.0f, 345.0f, 200.0f, 52.0f };
+    const Rectangle btnTopRight      = { SCREEN_W - 115, 10, 100, 30 };
+    const Rectangle btnPause         = { SCREEN_W - 225, 10, 100, 30 };
+    const Rectangle btnSurrYes       = { SCREEN_W / 2.0f - 120.0f, SCREEN_H / 2.0f + 12.0f, 105.0f, 40.0f };
+    const Rectangle btnSurrNo        = { SCREEN_W / 2.0f + 15.0f,  SCREEN_H / 2.0f + 12.0f, 105.0f, 40.0f };
 
     SetTargetFPS(60);
 
@@ -7994,91 +8094,134 @@ int main(void)
         Vector2 mousePos = GetMousePosition();
         bool clicked = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 
-        if (loginErrorTimer > 0.0f) loginErrorTimer -= dt;
-
-        // Top-right button returns to MENU_MODE from sub-menus or resets an active match
-        if (state != MENU_MODE &&
-            ((clicked && CheckCollisionPointRec(mousePos, btnTopRight)) ||
-             (state != MENU_ADMIN_LOGIN && IsKeyPressed(KEY_R)))) {
-            state = MENU_MODE;
-            selectStep = 0;
-            isPaused = false;
-            gachaRolling = false;
-            ClearEffects();
-            continue;
+        // Online reward timers (15m -> +50 tickets, 1h -> +300 tickets)
+        g_online15mSec += dt;
+        g_online1hSec += dt;
+        bool onlineRewardTriggered = false;
+        while (g_online15mSec >= 900.0f) {
+            g_online15mSec -= 900.0f;
+            g_playerTickets += 50;
+            onlineRewardTriggered = true;
         }
+        while (g_online1hSec >= 3600.0f) {
+            g_online1hSec -= 3600.0f;
+            g_playerTickets += 300;
+            onlineRewardTriggered = true;
+        }
+        if (onlineRewardTriggered) SaveProgress();
 
-        // Role button (top-left in MENU_MODE / MENU_BOT_MODE / MENU_SELECT / MENU_GACHA):
-        // Player clicks to open Admin password prompt; Admin clicks to switch back to Player mode
-        if ((state == MENU_MODE || state == MENU_BOT_MODE || state == MENU_SELECT || state == MENU_GACHA) &&
-            clicked && CheckCollisionPointRec(mousePos, btnRoleToggle)) {
-            if (g_isAdmin) {
-                g_isAdmin = false;
-                selectStep = 0;
-                if (isVsBot) vsBotDraftActive = RollVsBotPlayerDraft(vsBotDraft);
-            } else {
-                memset(adminInput, 0, sizeof(adminInput));
-                adminInputLen = 0;
-                state = MENU_ADMIN_LOGIN;
+        bool inBotMatch = (state == COUNTDOWN || state == PLAYING) && (isVsBot || isChallenger);
+
+        // Surrender confirmation modal handling during bot matches
+        if (surrenderConfirm && inBotMatch) {
+            if (clicked) {
+                if (CheckCollisionPointRec(mousePos, btnSurrYes)) {
+                    surrenderConfirm = false;
+                    isPaused = false;
+                    winningTeam = 1;
+                    matchRewardGiven = true;
+                    lastEarnedTickets = 0;
+                    lastStreakBonusPct = 0;
+                    lastFirst15Bonus = false;
+                    if (isChallenger) {
+                        g_challengerActive = false;
+                        g_challengerWins = 0;
+                    } else if (isVsBot) {
+                        static const int loseBase[4] = { 2, 3, 0, 0 };
+                        int dIdx = (selectedBotDiff >= 0 && selectedBotDiff <= BOT_IMPOSSIBLE) ? (int)selectedBotDiff : 0;
+                        g_botWinStreak[dIdx] = 0;
+                        lastEarnedTickets = loseBase[dIdx];
+                        g_playerTickets += lastEarnedTickets;
+                    }
+                    SaveProgress();
+                    state = GAME_OVER;
+                } else if (CheckCollisionPointRec(mousePos, btnSurrNo)) {
+                    surrenderConfirm = false;
+                }
             }
-            continue;
-        }
-
-        // Admin quick-management buttons (visible when logged in as Admin)
-        if (g_isAdmin && (state == MENU_MODE || state == MENU_BOT_MODE || state == MENU_SELECT || state == MENU_GACHA) && clicked) {
-            if (CheckCollisionPointRec(mousePos, btnAdminUnlock)) {
-                for (int i = 0; i < TYPE_COUNT; i++) g_unlocked[i] = true;
-                SaveProgress();
-                if (isVsBot) vsBotDraftActive = RollVsBotPlayerDraft(vsBotDraft);
-            } else if (CheckCollisionPointRec(mousePos, btnAdminLock)) {
-                memset(g_unlocked, 0, sizeof(g_unlocked));
-                g_unlocked[TYPE_BURST] = true;
-                SaveProgress();
-                if (isVsBot) vsBotDraftActive = RollVsBotPlayerDraft(vsBotDraft);
-            } else if (CheckCollisionPointRec(mousePos, btnAdminSpins)) {
-                g_playerSpins += 10;
-                SaveProgress();
+            if (IsKeyPressed(KEY_ESCAPE)) surrenderConfirm = false;
+        } else {
+            // Top-right button: SURRENDER in bot matches, RESET in sandbox, RETURN in menus/game over
+            if (state != MENU_MODE &&
+                ((clicked && CheckCollisionPointRec(mousePos, btnTopRight)) || (!inBotMatch && IsKeyPressed(KEY_R)))) {
+                if (inBotMatch) {
+                    surrenderConfirm = true;
+                } else {
+                    state = MENU_MODE;
+                    selectStep = 0;
+                    isPaused = false;
+                    surrenderConfirm = false;
+                    gachaRolling = false;
+                    ClearEffects();
+                    continue;
+                }
             }
-        }
 
-        if ((state == COUNTDOWN || state == PLAYING) &&
-            ((clicked && CheckCollisionPointRec(mousePos, btnPause)) || IsKeyPressed(KEY_P))) {
-            isPaused = !isPaused;
+            if ((state == COUNTDOWN || state == PLAYING) &&
+                ((clicked && CheckCollisionPointRec(mousePos, btnPause)) || IsKeyPressed(KEY_P))) {
+                isPaused = !isPaused;
+            }
         }
 
         // ======================= UPDATE =======================
         if (state == MENU_MODE)
         {
             if (clicked) {
-                if (CheckCollisionPointRec(mousePos, btnMode1v1)) {
-                    is2v2 = false;
+                if (CheckCollisionPointRec(mousePos, btnModeSandbox)) {
                     isVsBot = false;
+                    isChallenger = false;
                     vsBotDraftActive = false;
-                    totalSlots = 2;
-                    selectStep = 0;
-                    state = MENU_SELECT;
-                } else if (CheckCollisionPointRec(mousePos, btnMode2v2)) {
-                    is2v2 = true;
-                    isVsBot = false;
-                    vsBotDraftActive = false;
-                    totalSlots = 4;
-                    selectStep = 0;
-                    state = MENU_SELECT;
+                    state = MENU_SANDBOX;
                 } else if (CheckCollisionPointRec(mousePos, btnModeVsBot)) {
+                    isChallenger = false;
                     state = MENU_BOT_MODE;
+                } else if (CheckCollisionPointRec(mousePos, btnModeChall)) {
+                    state = MENU_CHALLENGER;
                 } else if (CheckCollisionPointRec(mousePos, btnOpenGacha)) {
                     gachaRolling = false;
                     gachaHasResult = false;
                     state = MENU_GACHA;
+                } else if (CheckCollisionPointRec(mousePos, btnOpenInv)) {
+                    invScrollY = 0.0f;
+                    state = MENU_INVENTORY;
+                }
+            }
+        }
+        else if (state == MENU_SANDBOX)
+        {
+            if (clicked) {
+                if (CheckCollisionPointRec(mousePos, btnSandbox1v1)) {
+                    is2v2 = false;
+                    isVsBot = false;
+                    isChallenger = false;
+                    vsBotDraftActive = false;
+                    totalSlots = 2;
+                    selectStep = 0;
+                    state = MENU_SELECT;
+                } else if (CheckCollisionPointRec(mousePos, btnSandbox2v2)) {
+                    is2v2 = true;
+                    isVsBot = false;
+                    isChallenger = false;
+                    vsBotDraftActive = false;
+                    totalSlots = 4;
+                    selectStep = 0;
+                    state = MENU_SELECT;
                 }
             }
         }
         else if (state == MENU_BOT_MODE)
         {
             if (clicked) {
+                for (int d = 0; d < 4; d++) {
+                    Rectangle diffCard = { 34.0f + d * 186.0f, 118.0f, 174.0f, 172.0f };
+                    if (CheckCollisionPointRec(mousePos, diffCard)) {
+                        selectedBotDiff = (BotDifficulty)d;
+                    }
+                }
                 if (CheckCollisionPointRec(mousePos, btnBot1v1)) {
                     is2v2 = false;
                     isVsBot = true;
+                    isChallenger = false;
                     vsBotDraftActive = RollVsBotPlayerDraft(vsBotDraft);
                     totalSlots = 2;
                     selectStep = 0;
@@ -8086,6 +8229,7 @@ int main(void)
                 } else if (CheckCollisionPointRec(mousePos, btnBot2v2)) {
                     is2v2 = true;
                     isVsBot = true;
+                    isChallenger = false;
                     vsBotDraftActive = RollVsBotPlayerDraft(vsBotDraft);
                     totalSlots = 4;
                     selectStep = 0;
@@ -8093,27 +8237,65 @@ int main(void)
                 }
             }
         }
-        else if (state == MENU_ADMIN_LOGIN)
+        else if (state == MENU_CHALLENGER)
         {
-            int key = GetCharPressed();
-            while (key > 0) {
-                if (key >= 32 && key <= 125 && adminInputLen < 18) {
-                    adminInput[adminInputLen++] = (char)key;
-                    adminInput[adminInputLen] = '\0';
-                }
-                key = GetCharPressed();
-            }
-            if (IsKeyPressed(KEY_BACKSPACE) && adminInputLen > 0) {
-                adminInput[--adminInputLen] = '\0';
-            }
-            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
-                if (strcmp(adminInput, ADMIN_PASSWORD) == 0) {
-                    g_isAdmin = true;
-                    state = MENU_MODE;
+            if (clicked && CheckCollisionPointRec(mousePos, btnChallAction)) {
+                if (!g_challengerActive) {
+                    if (g_playerTickets >= 80) {
+                        g_playerTickets -= 80;
+                        g_challengerActive = true;
+                        g_challengerWins = 0;
+                        g_challengerCurDiff = (GetRandomValue(1, 100) <= 75) ? BOT_IMPOSSIBLE : BOT_HARD;
+                        SaveProgress();
+                    }
                 } else {
-                    loginErrorTimer = 1.6f;
-                    adminInputLen = 0;
-                    adminInput[0] = '\0';
+                    is2v2 = false;
+                    isVsBot = true;
+                    isChallenger = true;
+                    selectedBotDiff = g_challengerCurDiff;
+                    vsBotDraftActive = RollVsBotPlayerDraft(vsBotDraft);
+                    totalSlots = 2;
+                    selectStep = 0;
+                    state = MENU_SELECT;
+                }
+            }
+        }
+        else if (state == MENU_INVENTORY)
+        {
+            if (clicked) {
+                for (int t = 0; t < 4; t++) {
+                    Rectangle tabBtn = { 110.0f + t * 148.0f, 48.0f, 136.0f, 34.0f };
+                    if (CheckCollisionPointRec(mousePos, tabBtn)) {
+                        invTab = (InventoryTab)t;
+                        invScrollY = 0.0f;
+                    }
+                }
+            }
+            if (invTab == INV_TAB_INVENTORY || invTab == INV_TAB_UPGRADE) {
+                float wheel = GetMouseWheelMove();
+                if (wheel != 0.0f) invScrollY -= wheel * 48.0f;
+                if (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S)) invScrollY += 320.0f * dt;
+                if (IsKeyDown(KEY_UP)   || IsKeyDown(KEY_W)) invScrollY -= 320.0f * dt;
+                invScrollY = ClampF(invScrollY, 0.0f, maxSelectScroll);
+
+                if (invTab == INV_TAB_UPGRADE && clicked && CheckCollisionPointRec(mousePos, selectViewport)) {
+                    for (int idx = 0; idx < TYPE_COUNT; idx++) {
+                        int row = idx / selectCols;
+                        int col = idx % selectCols;
+                        Rectangle cardRect = {
+                            gridStartX + col * (cardSize + cardGapX),
+                            selectViewport.y + 8.0f + row * (cardSize + cardGapY) - invScrollY,
+                            cardSize, cardSize
+                        };
+                        if (cardRect.y + cardRect.height < selectViewport.y || cardRect.y > selectViewport.y + selectViewport.height) continue;
+                        BallType bType = sortedBalls[idx];
+                        if (g_unlocked[bType] && g_ballCopies[bType] >= 5 && CheckCollisionPointRec(mousePos, cardRect)) {
+                            g_ballCopies[bType] -= 5;
+                            g_ballUpgradeLv[bType]++;
+                            SaveProgress();
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -8131,17 +8313,14 @@ int main(void)
                     gachaRolling = false;
                     gachaHasResult = true;
                     gachaPreview = gachaResult;
-                    g_unlocked[gachaResult] = true;
-                    SaveProgress();
                 }
             } else if (clicked && CheckCollisionPointRec(mousePos, btnRollNow)) {
-                if (g_isAdmin || g_playerSpins > 0) {
-                    if (!g_isAdmin) {
-                        g_playerSpins--;
-                    }
+                if (g_playerTickets > 0) {
+                    g_playerTickets--;
                     gachaResult = RollGachaBall();
                     gachaWasNew = !g_unlocked[gachaResult];
                     g_unlocked[gachaResult] = true;
+                    g_ballCopies[gachaResult]++;
                     SaveProgress();
                     gachaRolling = true;
                     gachaHasResult = false;
@@ -8152,6 +8331,7 @@ int main(void)
         }
         else if (state == MENU_SELECT)
         {
+            bool sandboxAllUnlocked = (!isVsBot && !isChallenger);
             if (!isVsBot || !vsBotDraftActive) {
                 // Mouse wheel + Up/Down arrow keys + scrollbar dragging for 3-per-row square grid
                 float wheel = GetMouseWheelMove();
@@ -8192,46 +8372,17 @@ int main(void)
                     if (!CheckCollisionPointRec(mousePos, cardRect)) continue;
 
                     BallType bType = (isVsBot && vsBotDraftActive) ? vsBotDraft[idx] : sortedBalls[idx];
-                    // In Player mode, locked balls cannot be picked; Admin has full access to all balls
-                    if (!IsBallAvailable(bType)) continue;
+                    if (!IsBallAvailable(bType, sandboxAllUnlocked)) continue;
 
                     pickedTypes[selectStep++] = bType;
-                    // In VS BOT mode:
-                    // - 1v1: after Player picks 1 ball, Bot rolls 1 ball
-                    // - 2v2: after Player picks their 1st ball, re-roll the 3-ball draft for their 2nd ball;
-                    //        after Player picks 2 balls, Bot independently rolls its 2 balls using the same rarity odds!
                     if (isVsBot) {
                         if (!is2v2 && selectStep == 1) {
-                            pickedTypes[selectStep++] = RollBotBall();
+                            pickedTypes[selectStep++] = RollBotBallForDifficulty(selectedBotDiff);
                         } else if (is2v2 && selectStep == 1) {
                             vsBotDraftActive = RollVsBotPlayerDraft(vsBotDraft);
                         } else if (is2v2 && selectStep == 2) {
-                            float botPct[RARITY_COUNT];
-                            ComputeBotClassRates(botPct);
-                            for (int bSlot = 0; bSlot < 2; bSlot++) {
-                                float roll = (float)GetRandomValue(0, 10000) / 100.0f;
-                                float accum = 0.0f;
-                                BallRarity chosenR = RARITY_COMMON;
-                                for (int r = 0; r < RARITY_COUNT; r++) {
-                                    accum += botPct[r];
-                                    if (roll <= accum || r == RARITY_COUNT - 1) {
-                                        chosenR = (BallRarity)r;
-                                        break;
-                                    }
-                                }
-                                g_botClassPicks[chosenR]++;
-                                g_botTotalPicks++;
-
-                                BallType pool[TYPE_COUNT];
-                                int poolCount = 0;
-                                for (int i = 0; i < TYPE_COUNT; i++) {
-                                    if (g_ballRarity[i] == chosenR) {
-                                        pool[poolCount++] = (BallType)i;
-                                    }
-                                }
-                                pickedTypes[selectStep++] = (poolCount > 0) ? pool[GetRandomValue(0, poolCount - 1)] : TYPE_BURST;
-                            }
-                            SaveProgress();
+                            pickedTypes[selectStep++] = RollBotBallForDifficulty(selectedBotDiff);
+                            pickedTypes[selectStep++] = RollBotBallForDifficulty(selectedBotDiff);
                         }
                     }
                     if (selectStep >= totalSlots) {
@@ -8242,11 +8393,17 @@ int main(void)
                         if (!is2v2) {
                             InitBallStats(0, pickedTypes[0], 0, (Vector2){ 200.0f, SCREEN_H / 2.0f });
                             InitBallStats(1, pickedTypes[1], 1, (Vector2){ 600.0f, SCREEN_H / 2.0f });
+                            ApplyMatchBotAndUpgradeStats(&g_balls[0], false, selectedBotDiff);
+                            ApplyMatchBotAndUpgradeStats(&g_balls[1], isVsBot, selectedBotDiff);
                         } else {
                             InitBallStats(0, pickedTypes[0], 0, (Vector2){ 180.0f, SCREEN_H * 0.32f });
                             InitBallStats(1, pickedTypes[1], 0, (Vector2){ 180.0f, SCREEN_H * 0.68f });
                             InitBallStats(2, pickedTypes[2], 1, (Vector2){ 620.0f, SCREEN_H * 0.32f });
                             InitBallStats(3, pickedTypes[3], 1, (Vector2){ 620.0f, SCREEN_H * 0.68f });
+                            ApplyMatchBotAndUpgradeStats(&g_balls[0], false, selectedBotDiff);
+                            ApplyMatchBotAndUpgradeStats(&g_balls[1], false, selectedBotDiff);
+                            ApplyMatchBotAndUpgradeStats(&g_balls[2], isVsBot, selectedBotDiff);
+                            ApplyMatchBotAndUpgradeStats(&g_balls[3], isVsBot, selectedBotDiff);
                         }
 
                         int baseCount = g_ballCount;
@@ -8256,7 +8413,9 @@ int main(void)
                         }
 
                         countdownTimer = 3.0f;
+                        matchTimer = (isVsBot || isChallenger) ? 180.0f : 0.0f;
                         isPaused = false;
+                        surrenderConfirm = false;
                         matchRewardGiven = false;
                         state = COUNTDOWN;
                     }
@@ -8266,13 +8425,19 @@ int main(void)
         }
         else if (state == COUNTDOWN)
         {
-            if (!isPaused) {
+            if (!isPaused && !surrenderConfirm) {
                 countdownTimer -= dt;
                 if (countdownTimer <= 0.0f) state = PLAYING;
             }
         }
-        else if (state == PLAYING && !isPaused)
+        else if (state == PLAYING && !isPaused && !surrenderConfirm)
         {
+            if (isVsBot || isChallenger) {
+                matchTimer -= dt;
+                if (matchTimer < 0.0f) matchTimer = 0.0f;
+            } else {
+                matchTimer += dt;
+            }
             UpdateEffects(dt);
 
             for (int i = 0; i < g_ballCount; i++)
@@ -8309,7 +8474,7 @@ int main(void)
                     if (b->poisonTick <= 0.0f) {
                         b->poisonTick += 0.6f;
                         b->poisonTicks--;
-                        TakeDamage(b, 1);
+                        TakeDamageScaled(b, 1, b->poisonDmgMult);
                         if (!IsAlive(b)) continue;
                     }
                 }
@@ -8320,7 +8485,7 @@ int main(void)
                     if (b->burnTickTimer <= 0.0f) {
                         b->burnTickTimer += ARCHER_BURN_TICK_T;
                         b->burnTicks--;
-                        TakeDamage(b, ARCHER_BURN_DMG);
+                        TakeDamageScaled(b, ARCHER_BURN_DMG, b->burnDmgMult);
                         if (!IsAlive(b)) continue;
                     }
                 }
@@ -8359,7 +8524,7 @@ int main(void)
                     b->pos = b->freezePos;
                     b->freezeDmgTimer -= dt;
                     if (b->freezeDmgTimer <= 0.0f) {
-                        TakeDamage(b, 3);
+                        TakeDamageScaled(b, 3, b->freezeDmgMult);
                         b->freezeDmgTimer += 0.5f;
                         if (!IsAlive(b)) continue;
                     }
@@ -8379,7 +8544,7 @@ int main(void)
                     if (b->shockTick <= 0.0f) {
                         b->shockTick += SHOCK_TICK_TIME;
                         b->shockTicks--;
-                        DealDamage(b, SHOCK_DMG, true);
+                        DealDamageScaled(b, SHOCK_DMG, true, b->shockDmgMult);
                         if (!IsAlive(b)) continue;
                     }
                     if (b->shockTicks <= 0) {
@@ -8535,17 +8700,65 @@ int main(void)
                 if (IsCombatBall(&g_balls[i]))
                     teamAlive[g_balls[i].team] = true;
             }
-            if (!teamAlive[0] || !teamAlive[1]) {
-                winningTeam = teamAlive[0] ? 0 : (teamAlive[1] ? 1 : -1);
+            bool matchEnded = (!teamAlive[0] || !teamAlive[1]);
+            bool timeUp = (!matchEnded && (isVsBot || isChallenger) && matchTimer <= 0.0f);
+            if (matchEnded || timeUp) {
+                if (matchEnded) {
+                    winningTeam = teamAlive[0] ? 0 : (teamAlive[1] ? 1 : -1);
+                } else {
+                    int teamHp[2] = { 0, 0 };
+                    for (int i = 0; i < g_ballCount; i++) {
+                        if (IsCombatBall(&g_balls[i]))
+                            teamHp[g_balls[i].team] += g_balls[i].hp;
+                    }
+                    winningTeam = (teamHp[0] >= teamHp[1]) ? 0 : 1;
+                }
                 if (!matchRewardGiven) {
                     matchRewardGiven = true;
-                    if (isVsBot) {
-                        // VS BOT rewards: Win (Blue Team == 0) gives +4 Gacha spins; Lose/Draw gives +2 Gacha spins
-                        lastEarnedSpins = (winningTeam == 0) ? 4 : 2;
-                    } else {
-                        lastEarnedSpins = 2;
+                    lastEarnedTickets = 0;
+                    lastStreakBonusPct = 0;
+                    lastFirst15Bonus = false;
+
+                    if (!isVsBot && !isChallenger) {
+                        // 1v1 and 2v2 sandbox: 0 tickets win or lose
+                        lastEarnedTickets = 0;
+                    } else if (isChallenger) {
+                        if (winningTeam == 0) {
+                            g_challengerWins++;
+                            if (g_challengerWins >= 5) {
+                                lastEarnedTickets = 600;
+                                g_playerTickets += 600;
+                                g_challengerActive = false;
+                                g_challengerWins = 0;
+                            } else {
+                                g_challengerCurDiff = (GetRandomValue(1, 100) <= 75) ? BOT_IMPOSSIBLE : BOT_HARD;
+                            }
+                        } else {
+                            g_challengerActive = false;
+                            g_challengerWins = 0;
+                        }
+                    } else if (isVsBot) {
+                        static const int winBase[4]  = { 5, 20, 40, 80 };
+                        static const int loseBase[4] = { 2,  3,  0,  0 };
+                        int dIdx = (selectedBotDiff >= 0 && selectedBotDiff <= BOT_IMPOSSIBLE) ? (int)selectedBotDiff : 0;
+                        if (winningTeam == 0) {
+                            int base = winBase[dIdx];
+                            lastStreakBonusPct = CalcWinStreakBonusPct(g_botWinStreak[dIdx]);
+                            int earned = base + (int)roundf((float)base * (float)lastStreakBonusPct / 100.0f);
+                            if (g_botTotalWins < 15) {
+                                earned += 20;
+                                lastFirst15Bonus = true;
+                            }
+                            g_botTotalWins++;
+                            g_botWinStreak[dIdx]++;
+                            lastEarnedTickets = earned;
+                            g_playerTickets += earned;
+                        } else {
+                            g_botWinStreak[dIdx] = 0;
+                            lastEarnedTickets = loseBase[dIdx];
+                            g_playerTickets += lastEarnedTickets;
+                        }
                     }
-                    g_playerSpins += lastEarnedSpins;
                     SaveProgress();
                 }
                 state = GAME_OVER;
@@ -8560,38 +8773,32 @@ int main(void)
                 ClearBackground(BG_COLOR);
             }
 
-            // Role badge & Admin toolbar at top-left in menus
-            if (state == MENU_MODE || state == MENU_BOT_MODE || state == MENU_SELECT || state == MENU_GACHA) {
-                Color roleCol = g_isAdmin ? (Color){ 210, 35, 35, 255 } : (Color){ 40, 120, 210, 255 };
-                const char* roleTxt = g_isAdmin ? "ROLE: ADMIN (LOCK)" : "ROLE: PLAYER (LOGIN)";
-                DrawRectangleRec(btnRoleToggle, roleCol);
-                DrawRectangleLinesEx(btnRoleToggle, 1.5f, BLACK);
-                DrawText(roleTxt,
-                         (int)(btnRoleToggle.x + (btnRoleToggle.width - MeasureText(roleTxt, 12)) * 0.5f),
-                         (int)btnRoleToggle.y + 10, 12, WHITE);
+            // Top-left ticket & online gift bar in menus
+            if (state == MENU_MODE || state == MENU_SANDBOX || state == MENU_BOT_MODE || state == MENU_CHALLENGER ||
+                state == MENU_SELECT || state == MENU_GACHA || state == MENU_INVENTORY) {
+                Rectangle tBox = { 15.0f, 10.0f, 160.0f, 30.0f };
+                DrawRectangleRec(tBox, GOLD);
+                DrawRectangleLinesEx(tBox, 1.5f, BLACK);
+                DrawText(TextFormat("TICKETS: %d", g_playerTickets), 25, 17, 15, BLACK);
 
-                if (g_isAdmin) {
-                    DrawRectangleRec(btnAdminUnlock, (Color){ 45, 175, 65, 255 });
-                    DrawRectangleLinesEx(btnAdminUnlock, 1.5f, BLACK);
-                    DrawText("UNLOCK ALL", (int)btnAdminUnlock.x + 22, (int)btnAdminUnlock.y + 10, 12, WHITE);
-
-                    DrawRectangleRec(btnAdminLock, (Color){ 120, 50, 50, 255 });
-                    DrawRectangleLinesEx(btnAdminLock, 1.5f, BLACK);
-                    DrawText("RESET LOCKS", (int)btnAdminLock.x + 18, (int)btnAdminLock.y + 10, 12, WHITE);
-
-                    DrawRectangleRec(btnAdminSpins, GOLD);
-                    DrawRectangleLinesEx(btnAdminSpins, 1.5f, BLACK);
-                    DrawText("+10 SPINS", (int)btnAdminSpins.x + 18, (int)btnAdminSpins.y + 10, 12, BLACK);
-                }
+                int rem15 = (int)ceilf(fmaxf(0.0f, 900.0f - g_online15mSec));
+                int rem1h = (int)ceilf(fmaxf(0.0f, 3600.0f - g_online1hSec));
+                DrawText(TextFormat("15m(+50): %02d:%02d  |  1h(+300): %02d:%02d",
+                                    rem15 / 60, rem15 % 60, rem1h / 60, rem1h % 60),
+                         188, 18, 14, DARKGRAY);
             }
 
             if (state != MENU_MODE) {
-                const char* topBtnTxt = (state == MENU_BOT_MODE || state == MENU_SELECT || state == MENU_GACHA || state == MENU_ADMIN_LOGIN) ? "RETURN" : "RESET";
-                DrawRectangleRec(btnTopRight, LIGHTGRAY);
+                const char* topBtnTxt = inBotMatch
+                    ? "SURRENDER"
+                    : ((state == MENU_SANDBOX || state == MENU_BOT_MODE || state == MENU_CHALLENGER ||
+                        state == MENU_SELECT || state == MENU_GACHA || state == MENU_INVENTORY || state == GAME_OVER)
+                       ? "RETURN" : "RESET");
+                DrawRectangleRec(btnTopRight, inBotMatch ? (Color){ 235, 130, 130, 255 } : LIGHTGRAY);
                 DrawRectangleLinesEx(btnTopRight, 1.5f, BLACK);
                 DrawText(topBtnTxt,
-                         (int)(btnTopRight.x + (btnTopRight.width - MeasureText(topBtnTxt, 15)) * 0.5f),
-                         (int)btnTopRight.y + 7, 15, BLACK);
+                         (int)(btnTopRight.x + (btnTopRight.width - MeasureText(topBtnTxt, 14)) * 0.5f),
+                         (int)btnTopRight.y + 8, 14, BLACK);
             }
 
             if (state == COUNTDOWN || state == PLAYING) {
@@ -8599,110 +8806,229 @@ int main(void)
                 DrawRectangleRec(btnPause, isPaused ? GOLD : LIGHTGRAY);
                 DrawRectangleLinesEx(btnPause, 1.5f, BLACK);
                 DrawText(pauseTxt,
-                         (int)(btnPause.x + (btnPause.width - MeasureText(pauseTxt, 15)) * 0.5f),
-                         (int)btnPause.y + 7, 15, BLACK);
+                         (int)(btnPause.x + (btnPause.width - MeasureText(pauseTxt, 14)) * 0.5f),
+                         (int)btnPause.y + 8, 14, BLACK);
+            }
+
+            if (state == COUNTDOWN || state == PLAYING || state == GAME_OVER) {
+                int totalSecs = (isVsBot || isChallenger) ? (int)ceilf(matchTimer) : (int)floorf(matchTimer);
+                if (totalSecs < 0) totalSecs = 0;
+                int mins = totalSecs / 60;
+                int secs = totalSecs % 60;
+                const char* timeTxt = TextFormat("%02d:%02d", mins, secs);
+                bool lowTime = (isVsBot || isChallenger) && matchTimer <= 15.0f && state == PLAYING;
+                Rectangle timerBox = { SCREEN_W / 2.0f - 46.0f, 10.0f, 92.0f, 30.0f };
+                DrawRectangleRec(timerBox, lowTime ? Fade((Color){ 255, 220, 220, 255 }, 0.92f) : Fade(RAYWHITE, 0.88f));
+                DrawRectangleLinesEx(timerBox, 1.5f, lowTime ? RED : BLACK);
+                DrawText(timeTxt,
+                         (int)(timerBox.x + (timerBox.width - MeasureText(timeTxt, 18)) * 0.5f),
+                         (int)timerBox.y + 6, 18, lowTime ? RED : BLACK);
             }
 
             if (state == MENU_MODE)
             {
-                DrawCenteredText("BALLvBALL - SELECT MODE", 88, 26, BLACK);
+                DrawCenteredText("BALLvBALL - SELECT MODE", 76, 26, BLACK);
 
-                DrawRectangleRec(btnMode1v1, SKYBLUE);
-                DrawRectangleLinesEx(btnMode1v1, 2.0f, BLACK);
-                DrawText("1 VS 1", (int)(btnMode1v1.x + (btnMode1v1.width - MeasureText("1 VS 1", 24)) * 0.5f),
-                         (int)btnMode1v1.y + 17, 24, BLACK);
-
-                DrawRectangleRec(btnMode2v2, ORANGE);
-                DrawRectangleLinesEx(btnMode2v2, 2.0f, BLACK);
-                DrawText("2 VS 2", (int)(btnMode2v2.x + (btnMode2v2.width - MeasureText("2 VS 2", 24)) * 0.5f),
-                         (int)btnMode2v2.y + 17, 24, WHITE);
+                DrawRectangleRec(btnModeSandbox, SKYBLUE);
+                DrawRectangleLinesEx(btnModeSandbox, 2.0f, BLACK);
+                DrawText("SANDBOX", (int)(btnModeSandbox.x + (btnModeSandbox.width - MeasureText("SANDBOX", 22)) * 0.5f),
+                         (int)btnModeSandbox.y + 16, 22, BLACK);
 
                 DrawRectangleRec(btnModeVsBot, (Color){ 220, 45, 75, 255 });
                 DrawRectangleLinesEx(btnModeVsBot, 2.0f, BLACK);
-                DrawText("VS BOT", (int)(btnModeVsBot.x + (btnModeVsBot.width - MeasureText("VS BOT", 24)) * 0.5f),
-                         (int)btnModeVsBot.y + 17, 24, WHITE);
+                DrawText("VS BOT", (int)(btnModeVsBot.x + (btnModeVsBot.width - MeasureText("VS BOT", 22)) * 0.5f),
+                         (int)btnModeVsBot.y + 16, 22, WHITE);
 
-                // Gacha button
+                DrawRectangleRec(btnModeChall, (Color){ 165, 35, 35, 255 });
+                DrawRectangleLinesEx(btnModeChall, 2.0f, BLACK);
+                DrawText("CHALLENGER", (int)(btnModeChall.x + (btnModeChall.width - MeasureText("CHALLENGER", 19)) * 0.5f),
+                         (int)btnModeChall.y + 18, 19, GOLD);
+
                 DrawRectangleRec(btnOpenGacha, (Color){ 145, 55, 205, 255 });
                 DrawRectangleLinesEx(btnOpenGacha, 2.0f, BLACK);
-                const char* gachaBtnTxt = g_isAdmin ? "GACHA (ADMIN FREE)" : TextFormat("GACHA SPIN (%d)", g_playerSpins);
-                DrawText(gachaBtnTxt,
-                         (int)(btnOpenGacha.x + (btnOpenGacha.width - MeasureText(gachaBtnTxt, 18)) * 0.5f),
-                         (int)btnOpenGacha.y + 17, 18, WHITE);
+                DrawText("GACHA", (int)(btnOpenGacha.x + (btnOpenGacha.width - MeasureText("GACHA", 22)) * 0.5f),
+                         (int)btnOpenGacha.y + 16, 22, WHITE);
 
-                int unlockedCnt = 0;
-                for (int i = 0; i < TYPE_COUNT; i++) if (IsBallAvailable((BallType)i)) unlockedCnt++;
-                DrawCenteredText(TextFormat("UNLOCKED BALLS: %d / %d   (VS BOT: WIN +4 SPINS, LOSE +2 SPINS)", unlockedCnt, TYPE_COUNT),
-                                 320, 14, DARKGRAY);
+                DrawRectangleRec(btnOpenInv, (Color){ 45, 145, 95, 255 });
+                DrawRectangleLinesEx(btnOpenInv, 2.0f, BLACK);
+                DrawText("INVENTORY", (int)(btnOpenInv.x + (btnOpenInv.width - MeasureText("INVENTORY", 20)) * 0.5f),
+                         (int)btnOpenInv.y + 17, 20, WHITE);
 
-                float botPct[RARITY_COUNT];
-                ComputeBotClassRates(botPct);
-                DrawCenteredText(TextFormat("BOT CLASS ODDS (L-M-R-U-C): %.0f%% - %.0f%% - %.0f%% - %.0f%% - %.0f%%",
-                                            botPct[RARITY_LEGENDARY], botPct[RARITY_MYTHIC],
-                                            botPct[RARITY_RARE], botPct[RARITY_UNCOMMON], botPct[RARITY_COMMON]),
-                                 344, 13, (Color){ 90, 35, 120, 255 });
+                DrawCenteredText(TextFormat("FIRST-15 BOT WINS BONUS: %d / 15 (+20 TICKETS/WIN)",
+                                            (g_botTotalWins < 15 ? g_botTotalWins : 15)),
+                                 315, 15, DARKGRAY);
+            }
+            else if (state == MENU_SANDBOX)
+            {
+                DrawCenteredText("SANDBOX - SELECT TEAM SIZE", 110, 26, BLACK);
+                DrawCenteredText("ALL BALLS UNLOCKED FOR TESTING (0 TICKETS)", 148, 15, (Color){ 40, 95, 165, 255 });
 
-                // Rarity color legend at bottom
-                int legY = 395;
-                DrawCenteredText("RARITY TIERS:", legY - 22, 14, BLACK);
-                for (int r = 0; r < RARITY_COUNT; r++) {
-                    int lx = 68 + r * 140;
-                    DrawRectangle(lx, legY, 120, 24, RarityColor((BallRarity)r));
-                    DrawRectangleLines(lx, legY, 120, 24, BLACK);
-                    const char* rn = g_rarityNames[r];
-                    Color tc = (r >= RARITY_MYTHIC) ? WHITE : BLACK;
-                    DrawText(rn, lx + (120 - MeasureText(rn, 12)) / 2, legY + 6, 12, tc);
-                }
+                DrawRectangleRec(btnSandbox1v1, SKYBLUE);
+                DrawRectangleLinesEx(btnSandbox1v1, 2.0f, BLACK);
+                DrawText("1 VS 1", (int)(btnSandbox1v1.x + (btnSandbox1v1.width - MeasureText("1 VS 1", 24)) * 0.5f),
+                         (int)btnSandbox1v1.y + 20, 24, BLACK);
+
+                DrawRectangleRec(btnSandbox2v2, ORANGE);
+                DrawRectangleLinesEx(btnSandbox2v2, 2.0f, BLACK);
+                DrawText("2 VS 2", (int)(btnSandbox2v2.x + (btnSandbox2v2.width - MeasureText("2 VS 2", 24)) * 0.5f),
+                         (int)btnSandbox2v2.y + 20, 24, WHITE);
             }
             else if (state == MENU_BOT_MODE)
             {
-                DrawCenteredText("VS BOT - SELECT TEAM SIZE", 105, 26, BLACK);
-                DrawCenteredText("BOT BALLS ARE ROLLED INDEPENDENTLY USING DYNAMIC RARITY ODDS", 145, 14, DARKGRAY);
+                static const char* const diffNames[4] = { "EASY", "MEDIUM", "HARD", "IMPOSSIBLE" };
+                static const char* const diffRew[4]   = { "W:+5  L:+2", "W:+20 L:+3", "W:+40 L:0", "W:+80 L:0" };
+                static const char* const diffBuffs[4] = { "100 HP | BASE", "100 HP | BASE", "110 HP +15%DMG +5%HOM", "120 HP +25%DMG +10%HOM" };
+                static const Color diffCols[4] = {
+                    { 75, 185, 95, 255 }, { 70, 155, 225, 255 }, { 225, 125, 40, 255 }, { 195, 35, 55, 255 }
+                };
+
+                DrawCenteredText("VS BOT - SELECT DIFFICULTY & TEAM SIZE", 68, 22, BLACK);
+                for (int d = 0; d < 4; d++) {
+                    Rectangle dc = { 34.0f + d * 186.0f, 118.0f, 174.0f, 172.0f };
+                    bool sel = ((int)selectedBotDiff == d);
+                    DrawRectangleRec(dc, sel ? (Color){ 255, 252, 232, 255 } : RAYWHITE);
+                    DrawRectangle((int)dc.x, (int)dc.y, (int)dc.width, 30, diffCols[d]);
+                    DrawText(diffNames[d], (int)(dc.x + (dc.width - MeasureText(diffNames[d], 17)) * 0.5f), (int)dc.y + 6, 17, WHITE);
+                    DrawText(diffRew[d], (int)(dc.x + (dc.width - MeasureText(diffRew[d], 14)) * 0.5f), (int)dc.y + 48, 14, BLACK);
+                    DrawText(diffBuffs[d], (int)(dc.x + (dc.width - MeasureText(diffBuffs[d], 10)) * 0.5f), (int)dc.y + 78, 10, (d >= 2) ? MAROON : DARKGRAY);
+                    if (d == 3) {
+                        const char* imp2 = "5% IMMUNE | 10% -33%DMG";
+                        DrawText(imp2, (int)(dc.x + (dc.width - MeasureText(imp2, 10)) * 0.5f), (int)dc.y + 96, 10, MAROON);
+                    }
+                    const char* stTxt = TextFormat("STREAK: %d (+%d%%)", g_botWinStreak[d], CalcWinStreakBonusPct(g_botWinStreak[d]));
+                    DrawText(stTxt, (int)(dc.x + (dc.width - MeasureText(stTxt, 13)) * 0.5f), (int)dc.y + 134, 13, (Color){ 40, 95, 165, 255 });
+                    DrawRectangleLinesEx(dc, sel ? 3.5f : 1.5f, sel ? GOLD : BLACK);
+                }
 
                 DrawRectangleRec(btnBot1v1, SKYBLUE);
                 DrawRectangleLinesEx(btnBot1v1, 2.0f, BLACK);
-                DrawText("1 VS 1 BOT", (int)(btnBot1v1.x + (btnBot1v1.width - MeasureText("1 VS 1 BOT", 22)) * 0.5f),
-                         (int)btnBot1v1.y + 21, 22, BLACK);
+                DrawText("1 VS 1 BOT", (int)(btnBot1v1.x + (btnBot1v1.width - MeasureText("1 VS 1 BOT", 20)) * 0.5f),
+                         (int)btnBot1v1.y + 18, 20, BLACK);
 
                 DrawRectangleRec(btnBot2v2, (Color){ 220, 45, 75, 255 });
                 DrawRectangleLinesEx(btnBot2v2, 2.0f, BLACK);
-                DrawText("2 VS 2 BOT", (int)(btnBot2v2.x + (btnBot2v2.width - MeasureText("2 VS 2 BOT", 22)) * 0.5f),
-                         (int)btnBot2v2.y + 21, 22, WHITE);
+                DrawText("2 VS 2 BOT", (int)(btnBot2v2.x + (btnBot2v2.width - MeasureText("2 VS 2 BOT", 20)) * 0.5f),
+                         (int)btnBot2v2.y + 18, 20, WHITE);
 
-                float botPct[RARITY_COUNT];
-                ComputeBotClassRates(botPct);
-                DrawCenteredText(TextFormat("BOT CLASS ODDS (L-M-R-U-C): %.0f%% - %.0f%% - %.0f%% - %.0f%% - %.0f%%",
-                                            botPct[RARITY_LEGENDARY], botPct[RARITY_MYTHIC],
-                                            botPct[RARITY_RARE], botPct[RARITY_UNCOMMON], botPct[RARITY_COMMON]),
-                                 305, 14, (Color){ 90, 35, 120, 255 });
-                DrawCenteredText("WIN VS BOT: +4 GACHA SPINS   |   LOSE / DRAW: +2 GACHA SPINS", 332, 14, DARKGRAY);
+                DrawCenteredText("STREAK BONUSES: 4th+:+10% | 6th+:+25% | 11th+:+50% | 16th+:+75% | 21st+:+105%", 405, 12, DARKGRAY);
             }
-            else if (state == MENU_ADMIN_LOGIN)
+            else if (state == MENU_CHALLENGER)
             {
-                DrawCenteredText("ADMIN AUTHENTICATION", 120, 26, BLACK);
-                DrawCenteredText("Enter 6-Digit Admin Password and press ENTER", 165, 16, DARKGRAY);
+                DrawCenteredText("CHALLENGER MODE", 76, 28, MAROON);
+                DrawCenteredText("WIN 5 MATCHES IN A ROW TO CLAIM +600 TICKETS!", 122, 18, BLACK);
+                DrawCenteredText("ENTRY FEE: 80 TICKETS  |  BOT ODDS: 75% IMPOSSIBLE / 25% HARD", 152, 14, DARKGRAY);
 
-                Rectangle box = { SCREEN_W / 2.0f - 140.0f, 205.0f, 280.0f, 48.0f };
-                DrawRectangleRec(box, RAYWHITE);
-                DrawRectangleLinesEx(box, 2.0f, BLACK);
+                if (!g_challengerActive) {
+                    bool canEnter = (g_playerTickets >= 80);
+                    DrawRectangleRec(btnChallAction, canEnter ? (Color){ 175, 35, 35, 255 } : GRAY);
+                    DrawRectangleLinesEx(btnChallAction, 2.0f, BLACK);
+                    const char* txt = canEnter ? "ENTER (80 TICKETS)" : "NEED 80 TICKETS";
+                    DrawText(txt, (int)(btnChallAction.x + (btnChallAction.width - MeasureText(txt, 20)) * 0.5f),
+                             (int)btnChallAction.y + 18, 20, WHITE);
+                } else {
+                    DrawCenteredText(TextFormat("CURRENT RUN: %d / 5 WINS", g_challengerWins), 205, 24, (Color){ 35, 130, 65, 255 });
+                    DrawCenteredText(TextFormat("NEXT OPPONENT: %s BOT (1V1)",
+                                                (g_challengerCurDiff == BOT_IMPOSSIBLE) ? "IMPOSSIBLE" : "HARD"),
+                                     240, 17, MAROON);
+                    DrawRectangleRec(btnChallAction, (Color){ 210, 55, 45, 255 });
+                    DrawRectangleLinesEx(btnChallAction, 2.0f, GOLD);
+                    const char* txt = TextFormat("FIGHT ROUND %d / 5", g_challengerWins + 1);
+                    DrawText(txt, (int)(btnChallAction.x + (btnChallAction.width - MeasureText(txt, 20)) * 0.5f),
+                             (int)btnChallAction.y + 18, 20, WHITE);
+                }
+            }
+            else if (state == MENU_INVENTORY)
+            {
+                static const char* const tabNames[4] = { "INVENTORY", "UPGRADE", "FUSION", "FORGE" };
+                for (int t = 0; t < 4; t++) {
+                    Rectangle tabBtn = { 110.0f + t * 148.0f, 48.0f, 136.0f, 34.0f };
+                    bool active = ((int)invTab == t);
+                    DrawRectangleRec(tabBtn, active ? GOLD : LIGHTGRAY);
+                    DrawRectangleLinesEx(tabBtn, 1.5f, BLACK);
+                    DrawText(tabNames[t], (int)(tabBtn.x + (tabBtn.width - MeasureText(tabNames[t], 15)) * 0.5f),
+                             (int)tabBtn.y + 9, 15, BLACK);
+                }
 
-                char masked[24] = { 0 };
-                for (int k = 0; k < adminInputLen; k++) masked[k] = '*';
-                DrawText(masked, (int)box.x + 14, (int)box.y + 12, 26, BLACK);
+                if (invTab == INV_TAB_FUSION || invTab == INV_TAB_FORGE) {
+                    DrawCenteredText(TextFormat("%s - COMING SOON", tabNames[invTab]), 210, 32, DARKGRAY);
+                } else {
+                    BeginScissorMode((int)selectViewport.x, (int)selectViewport.y,
+                                     (int)selectViewport.width, (int)selectViewport.height);
+                    for (int idx = 0; idx < TYPE_COUNT; idx++) {
+                        int row = idx / selectCols;
+                        int col = idx % selectCols;
+                        Rectangle cardRect = {
+                            gridStartX + col * (cardSize + cardGapX),
+                            selectViewport.y + 8.0f + row * (cardSize + cardGapY) - invScrollY,
+                            cardSize, cardSize
+                        };
+                        if (cardRect.y + cardRect.height < selectViewport.y ||
+                            cardRect.y > selectViewport.y + selectViewport.height) continue;
 
-                if (loginErrorTimer > 0.0f) {
-                    DrawCenteredText("ACCESS DENIED - WRONG PASSWORD!", 270, 18, RED);
+                        BallType bType = sortedBalls[idx];
+                        bool owned = g_unlocked[bType];
+                        BallRarity rar = g_ballRarity[bType];
+                        Color rarCol = RarityColor(rar);
+                        bool canUpg = (invTab == INV_TAB_UPGRADE && owned && g_ballCopies[bType] >= 5);
+                        bool hovered = canUpg && CheckCollisionPointRec(mousePos, selectViewport) &&
+                                       CheckCollisionPointRec(mousePos, cardRect);
+
+                        DrawRectangleRec(cardRect, owned ? (hovered ? (Color){ 255, 255, 230, 255 } : RAYWHITE) : (Color){ 210, 212, 218, 255 });
+                        DrawRectangle((int)cardRect.x, (int)cardRect.y, (int)cardRect.width, 22, rarCol);
+                        const char* rarTag = g_rarityNames[rar];
+                        DrawText(rarTag, (int)(cardRect.x + (cardRect.width - MeasureText(rarTag, 12)) * 0.5f),
+                                 (int)cardRect.y + 5, 12, (rar >= RARITY_MYTHIC) ? WHITE : BLACK);
+
+                        Vector2 iconCenter = { cardRect.x + cardRect.width * 0.5f, cardRect.y + 68.0f };
+                        DrawBallPreviewIcon(bType, iconCenter, btnColors[bType]);
+
+                        if (owned) {
+                            const char* info = (invTab == INV_TAB_INVENTORY)
+                                ? TextFormat("x%d  |  LV.%d", g_ballCopies[bType], g_ballUpgradeLv[bType])
+                                : TextFormat("LV.%d (%d/5)", g_ballUpgradeLv[bType], g_ballCopies[bType]);
+                            DrawText(info, (int)(cardRect.x + (cardRect.width - MeasureText(info, 12)) * 0.5f),
+                                     (int)(cardRect.y + cardRect.height - 44), 12, canUpg ? DARKGREEN : DARKGRAY);
+                            if (canUpg) {
+                                DrawText("CLICK UPGRADE", (int)(cardRect.x + (cardRect.width - MeasureText("CLICK UPGRADE", 11)) * 0.5f),
+                                         (int)(cardRect.y + 25), 11, DARKGREEN);
+                            }
+                        }
+
+                        Rectangle nameBar = { cardRect.x, cardRect.y + cardRect.height - 26.0f, cardRect.width, 26.0f };
+                        DrawRectangleRec(nameBar, owned ? (Color){ 32, 34, 40, 255 } : (Color){ 95, 98, 105, 255 });
+                        DrawText(names[bType], (int)(cardRect.x + (cardRect.width - MeasureText(names[bType], 14)) * 0.5f),
+                                 (int)nameBar.y + 6, 14, owned ? WHITE : LIGHTGRAY);
+
+                        if (!owned) {
+                            DrawRectangleRec(cardRect, Fade((Color){ 155, 158, 165, 255 }, 0.68f));
+                            int lw = MeasureText("LOCKED", 18);
+                            DrawRectangle((int)(iconCenter.x - lw * 0.5f - 8), (int)(iconCenter.y - 12), lw + 16, 24, Fade(LIGHTGRAY, 0.88f));
+                            DrawRectangleLines((int)(iconCenter.x - lw * 0.5f - 8), (int)(iconCenter.y - 12), lw + 16, 24, BLACK);
+                            DrawText("LOCKED", (int)(iconCenter.x - lw * 0.5f), (int)(iconCenter.y - 9), 18, BLACK);
+                        }
+
+                        DrawRectangleLinesEx(cardRect, hovered ? 3.5f : 2.0f, canUpg ? GREEN : rarCol);
+                        DrawRectangleLines((int)cardRect.x, (int)cardRect.y, (int)cardRect.width, (int)cardRect.height, BLACK);
+                    }
+                    EndScissorMode();
+                    DrawRectangleLinesEx(selectViewport, 1.5f, DARKGRAY);
+                    if (invTab == INV_TAB_UPGRADE) {
+                        DrawCenteredText("UPGRADE COST: 5 COPIES -> +5 STARTING HP & +2.5% DAMAGE PER LEVEL", 438, 12, DARKGRAY);
+                    } else if (invTab == INV_TAB_INVENTORY) {
+                        int unlockedCnt = 0;
+                        for (int i = 0; i < TYPE_COUNT; i++) if (g_unlocked[i]) unlockedCnt++;
+                        DrawCenteredText(TextFormat("UNLOCKED: %d / %d", unlockedCnt, TYPE_COUNT), 438, 14, DARKGRAY);
+                    }
                 }
             }
             else if (state == MENU_GACHA)
             {
-                DrawCenteredText("GACHA BALL MACHINE", 62, 26, BLACK);
-                const char* spinInfo = g_isAdmin ? "ADMIN MODE: UNLIMITED FREE SPINS"
-                                                 : TextFormat("SPINS AVAILABLE: %d", g_playerSpins);
-                DrawCenteredText(spinInfo, 96, 17, DARKGRAY);
+                DrawCenteredText("GACHA BALL MACHINE", 58, 26, BLACK);
+                DrawCenteredText(TextFormat("TICKETS: %d   |   PITY  R:%d/60  M:%d/500  L:%d/1400",
+                                            g_playerTickets, g_pityRare, g_pityMythic, g_pityLegend),
+                                 92, 15, DARKGRAY);
 
-                // Display card for current rolling/unboxed ball
-                Rectangle card = { SCREEN_W / 2.0f - 145.0f, 130.0f, 290.0f, 190.0f };
+                Rectangle card = { SCREEN_W / 2.0f - 145.0f, 124.0f, 290.0f, 190.0f };
                 BallType showType = (gachaRolling || gachaHasResult) ? gachaPreview : TYPE_BURST;
                 BallRarity showRarity = g_ballRarity[showType];
                 Color rCol = RarityColor(showRarity);
@@ -8711,14 +9037,12 @@ int main(void)
                 DrawRectangleLinesEx(card, 4.0f, (gachaRolling || gachaHasResult) ? rCol : DARKGRAY);
 
                 if (gachaRolling || gachaHasResult) {
-                    // Rarity banner at top of card
                     DrawRectangle((int)card.x + 4, (int)card.y + 4, (int)card.width - 8, 32, rCol);
                     Color bannerTxtCol = (showRarity >= RARITY_MYTHIC) ? WHITE : BLACK;
                     const char* rLabel = g_rarityNames[showRarity];
                     DrawText(rLabel, (int)(card.x + (card.width - MeasureText(rLabel, 18)) * 0.5f),
                              (int)card.y + 11, 18, bannerTxtCol);
 
-                    // Preview ball with full details + name
                     Vector2 cPos = { SCREEN_W / 2.0f, card.y + 98.0f };
                     DrawBallPreviewIcon(showType, cPos, btnColors[showType]);
 
@@ -8727,22 +9051,24 @@ int main(void)
                              (int)card.y + 148, 22, BLACK);
 
                     if (gachaHasResult) {
-                        const char* statusTxt = gachaWasNew ? "NEW BALL UNLOCKED!" : "ALREADY OWNED (DUPLICATE)";
-                        DrawCenteredText(statusTxt, 323, 16, gachaWasNew ? DARKGREEN : DARKGRAY);
+                        const char* statusTxt = gachaWasNew
+                            ? "NEW BALL UNLOCKED! (x1 COPY)"
+                            : TextFormat("DUPLICATE! (COPIES: x%d)", g_ballCopies[gachaResult]);
+                        DrawCenteredText(statusTxt, 319, 15, gachaWasNew ? DARKGREEN : DARKGRAY);
                     }
                 } else {
                     DrawCenteredText("PRESS ROLL TO SPIN!", (int)card.y + 85, 20, DARKGRAY);
                 }
 
-                bool canRoll = !gachaRolling && (g_isAdmin || g_playerSpins > 0);
+                bool canRoll = !gachaRolling && (g_playerTickets > 0);
                 DrawRectangleRec(btnRollNow, canRoll ? (Color){ 45, 180, 65, 255 } : GRAY);
                 DrawRectangleLinesEx(btnRollNow, 2.0f, BLACK);
-                const char* rollTxt = gachaRolling ? "ROLLING..." : (canRoll ? "ROLL GACHA (1)" : "NO SPINS LEFT");
+                const char* rollTxt = gachaRolling ? "ROLLING..." : (canRoll ? "ROLL GACHA (1 TICKET)" : "NO TICKETS LEFT");
                 DrawText(rollTxt,
-                         (int)(btnRollNow.x + (btnRollNow.width - MeasureText(rollTxt, 18)) * 0.5f),
-                         (int)btnRollNow.y + 17, 18, WHITE);
+                         (int)(btnRollNow.x + (btnRollNow.width - MeasureText(rollTxt, 16)) * 0.5f),
+                         (int)btnRollNow.y + 18, 16, WHITE);
 
-                DrawCenteredText("PER-BALL WEIGHT: COMMON 60-75% | UNCOMMON 20-30% | RARE 7-15% | MYTHIC 3-5% | LEGENDARY 1-2%",
+                DrawCenteredText("RATES: COMMON 55% | UNCOMMON 29% | RARE 10% | MYTHIC 5% | LEGENDARY 1%",
                                  415, 12, DARKGRAY);
             }
             else if (state == MENU_SELECT)
@@ -8799,7 +9125,7 @@ int main(void)
                     }
 
                     BallType bType = (isVsBot && vsBotDraftActive) ? vsBotDraft[idx] : sortedBalls[idx];
-                    bool avail = IsBallAvailable(bType);
+                    bool avail = IsBallAvailable(bType, (!isVsBot && !isChallenger));
                     BallRarity rar = g_ballRarity[bType];
                     Color rarCol = RarityColor(rar);
                     bool hovered = avail && CheckCollisionPointRec(mousePos, selectViewport) &&
@@ -8879,19 +9205,50 @@ int main(void)
                     DrawCenteredText(TextFormat("%d", (int)ceilf(countdownTimer)), SCREEN_H / 2 - 40, 80, BLACK);
                 }
                 else if (state == GAME_OVER) {
-                    DrawRectangle(0, SCREEN_H / 2 - 60, SCREEN_W, 125, Fade(BLACK, 0.75f));
-                    DrawCenteredText("GAME OVER", SCREEN_H / 2 - 45, 52, RED);
+                    DrawRectangle(0, SCREEN_H / 2 - 65, SCREEN_W, 138, Fade(BLACK, 0.78f));
+                    DrawCenteredText("GAME OVER", SCREEN_H / 2 - 52, 48, RED);
                     const char* winTxt = isVsBot
                         ? ((winningTeam == 0) ? "PLAYER WINS VS BOT!" : (winningTeam == 1 ? "BOT WINS!" : "DRAW!"))
                         : ((winningTeam == 0) ? "BLUE TEAM WINS!"     : (winningTeam == 1 ? "RED TEAM WINS!" : "DRAW!"));
                     Color winCol = (winningTeam == 0) ? SKYBLUE : (winningTeam == 1 ? ORANGE : RAYWHITE);
-                    DrawCenteredText(winTxt, SCREEN_H / 2 + 10, 24, winCol);
-                    DrawCenteredText(TextFormat("+%d GACHA SPINS EARNED!", lastEarnedSpins), SCREEN_H / 2 + 40, 16, GOLD);
+                    DrawCenteredText(winTxt, SCREEN_H / 2 + 2, 24, winCol);
+                    const char* rewTxt = "";
+                    if (!isVsBot && !isChallenger) {
+                        rewTxt = "TEST MODE: +0 TICKETS";
+                    } else if (isChallenger) {
+                        if (lastEarnedTickets > 0) rewTxt = "CHALLENGER 5/5 COMPLETE! +600 TICKETS!";
+                        else if (g_challengerActive) rewTxt = TextFormat("CHALLENGER PROGRESS: %d / 5 WINS!", g_challengerWins);
+                        else rewTxt = "CHALLENGER FAILED! (+0 TICKETS)";
+                    } else {
+                        rewTxt = TextFormat("+%d TICKETS EARNED!%s%s",
+                                            lastEarnedTickets,
+                                            (lastStreakBonusPct > 0) ? TextFormat(" (+%d%% STREAK)", lastStreakBonusPct) : "",
+                                            lastFirst15Bonus ? " (+20 NEWBIE)" : "");
+                    }
+                    DrawCenteredText(rewTxt, SCREEN_H / 2 + 34, 16, GOLD);
                 }
 
-                if (isPaused && (state == COUNTDOWN || state == PLAYING)) {
+                if (isPaused && !surrenderConfirm && (state == COUNTDOWN || state == PLAYING)) {
                     DrawRectangle(0, SCREEN_H / 2 - 45, SCREEN_W, 90, Fade(BLACK, 0.6f));
                     DrawCenteredText("PAUSED", SCREEN_H / 2 - 22, 48, GOLD);
+                }
+                if (surrenderConfirm && inBotMatch) {
+                    DrawRectangle(0, 0, SCREEN_W, SCREEN_H, Fade(BLACK, 0.45f));
+                    Rectangle dlg = { SCREEN_W / 2.0f - 175.0f, SCREEN_H / 2.0f - 68.0f, 350.0f, 136.0f };
+                    DrawRectangleRec(dlg, RAYWHITE);
+                    DrawRectangleLinesEx(dlg, 3.0f, BLACK);
+                    DrawCenteredText("ARE YOU SURE?", (int)dlg.y + 22, 24, BLACK);
+                    DrawCenteredText("SURRENDER COUNTS AS A LOSS", (int)dlg.y + 52, 13, MAROON);
+
+                    DrawRectangleRec(btnSurrYes, (Color){ 210, 45, 45, 255 });
+                    DrawRectangleLinesEx(btnSurrYes, 2.0f, BLACK);
+                    DrawText("YES", (int)(btnSurrYes.x + (btnSurrYes.width - MeasureText("YES", 20)) * 0.5f),
+                             (int)btnSurrYes.y + 10, 20, WHITE);
+
+                    DrawRectangleRec(btnSurrNo, LIGHTGRAY);
+                    DrawRectangleLinesEx(btnSurrNo, 2.0f, BLACK);
+                    DrawText("NO", (int)(btnSurrNo.x + (btnSurrNo.width - MeasureText("NO", 20)) * 0.5f),
+                             (int)btnSurrNo.y + 10, 20, BLACK);
                 }
             }
         EndDrawing();
