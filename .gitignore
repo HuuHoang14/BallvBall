@@ -57,6 +57,5 @@ dkms.conf
 #additional files to ignore
 *.cfg
 *.dat
-makefile.android
-Makefile.android
+*.Android
 *.code-workspace

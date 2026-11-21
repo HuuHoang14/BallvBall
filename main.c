@@ -1,5 +1,7 @@
 #include "raylib.h"
 #include <math.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,8 +96,8 @@ static void ClosePreviousInstanceIfRunning(const char* windowTitle) { (void)wind
 #define WITCH_INTERVAL      2.0f
 #define POTION_SPEED        9.0f
 #define WITCH_MAX_RANGE     (SCREEN_W / 4.0f)
-#define ZONE_TIME           2.5f
-#define WITCH_FREEZE_TIME   0.7f
+#define ZONE_TIME           3.0f
+#define WITCH_FREEZE_TIME   1.0f
 
 // Bow: shoots white arrow (length = ball diameter = 60) every 5s, accuracy +5% at all distances
 // (97% close -> 45% at max range = 3/4 screen width), deals 25 dmg, disappears on wall or enemy hit
@@ -109,7 +111,7 @@ static void ClosePreviousInstanceIfRunning(const char* windowTitle) { (void)wind
 #define REFORGE_MAIN_RAD    ((int)(BASE_RADIUS * 0.90f))
 #define REFORGE_SUB_RAD     ((int)(BASE_RADIUS * 0.75f))
 #define REFORGE_BASE_DMG    5.0f
-#define REFORGE_LVL_MULT    1.30f
+#define REFORGE_LVL_MULT    1.45f
 
 // Ninja: throws kunai sequentially; waits 0.5s then reloads over 2.5s (3.0s total);
 // max flight range = 40% window width (320px), accuracy = 80% at max range, 3..8 kunai from 100->35 HP
@@ -164,8 +166,8 @@ static void ClosePreviousInstanceIfRunning(const char* windowTitle) { (void)wind
 // Chess: 0 normal contact dmg; every 3.0s (not counting 2.75s skill duration) turns arena into a subtle
 // checkerboard for 2.75s, anchors briefly at start pos, and dashes with 25% chance each as:
 // Queen (8 dirs), Rook (4 ortho dirs), Bishop (4 diag dirs), or Knight (8 L-shapes)
-#define CHESS_COOLDOWN      3.0f
-#define CHESS_DURATION      2.75f
+#define CHESS_COOLDOWN      5.0f
+#define CHESS_DURATION      3.0f
 #define CHESS_PAUSE_TIME    0.12f
 #define CHESS_SKILL_DMG     15
 #define CHESS_DIR_RANGE     (SCREEN_W / 2.0f)
@@ -257,15 +259,18 @@ static void ClosePreviousInstanceIfRunning(const char* windowTitle) { (void)wind
 #define UNSHACKLED_LUX_T            0.95f
 #define UNSHACKLED_LUX_W            (BASE_RADIUS * 2.0f * 1.2f * 1.25f) // +25% width
 #define UNSHACKLED_LUX_DMG          25
-#define UNSHACKLED_SWORD_T          0.35f                        // faster sword fall speed
+#define UNSHACKLED_SWORD_T          0.20f                        // fast sword fall speed
 #define UNSHACKLED_SWORD_RNG        (BASE_RADIUS * 1.4f)
 #define UNSHACKLED_EXEC_HP          20                           // executes enemies with <= 20 HP
 #define UNSHACKLED_SWORD_TARGET_DMG 7                            // 7 dmg to primary target
 #define UNSHACKLED_SWORD_AOE_DMG    3                            // 3 dmg to surrounding enemies
 #define UNSHACKLED_MAX_STACKS       3                            // max 3 chain-lash stacks
 #define UNSHACKLED_STACK_TIME       3.0f                         // 3.0s stack duration (resets on skill hit or chain lash)
-#define UNSHACKLED_LASH_DMG         10                           // 10 HP per chain lash on contact
+#define UNSHACKLED_LASH_DMG         10                           // 10 HP per chain lash
 #define UNSHACKLED_LASH_DELAY       0.25f                        // 0.25s delay between chain lashes
+#define UNSHACKLED_LASH_RAD_MULT    1.25f                        // 1.25x ball radius detection & circular sweep
+#define UNSHACKLED_LASH_MISS_PCT    5                            // 5% miss chance
+#define UNSHACKLED_LASH_HEAL        4                            // +4 HP heal on hit (capped at maxHp)
 
 // Judgement (Legendary): gold/white/gray multi-shade justice ball with angel wings & golden halo, 0 normal contact dmg;
 // every 3.0s stops in place, remembers nearest enemy, charges for 0.75s (50% dmg reduction, outer gold & white aura + Kizaru 4-point star),
@@ -275,10 +280,10 @@ static void ClosePreviousInstanceIfRunning(const char* windowTitle) { (void)wind
 #define JUDGEMENT_CD            3.0f
 #define JUDGEMENT_CHARGE_T      0.75f
 #define JUDGEMENT_SHRINK_T      0.30f
-#define JUDGEMENT_POST_IMMUNE_T 0.50f
+#define JUDGEMENT_POST_IMMUNE_T 0.25f
 #define JUDGEMENT_MAX_GROW      0.25f
 #define JUDGEMENT_RAM_SPEED     17.5f
-#define JUDGEMENT_RAM_RANGE     (SCREEN_W * 0.35f)
+#define JUDGEMENT_RAM_RANGE     (SCREEN_W * 0.45f)
 #define JUDGEMENT_RAM_DMG       20
 
 // Train (Uncommon): black/dark-blue/wood/iron ball, 0 contact dmg;
@@ -331,11 +336,12 @@ static void ClosePreviousInstanceIfRunning(const char* windowTitle) { (void)wind
 // if colliding with an enemy or wall during Charge, sparks fly and both are immobilized for 1.25s before starting the 4.0s cooldown
 #define CAVALRY_BASE_DMG    12
 #define CAVALRY_CD          4.0f
-#define CAVALRY_MAX_MULT    1.60f
+#define CAVALRY_MAX_MULT    1.80f
 #define CAVALRY_MAX_DIST    (SCREEN_W * 0.50f)
-#define CAVALRY_MIN_CHG_DMG 10
-#define CAVALRY_MAX_CHG_DMG 25
-#define CAVALRY_STUN_T      1.25f
+#define CAVALRY_MIN_CHG_DMG 12
+#define CAVALRY_MAX_CHG_DMG 28
+#define CAVALRY_STUN_BALL_T 1.00f
+#define CAVALRY_STUN_WALL_T 0.75f
 
 // Executer (Common - Medieval): wears an iron executioner hood & carries a heavy long-handled axe;
 // on contact: raises heavy axe and chops down for 10 HP (with red pain flash on victim), 2.25s cooldown (0 dmg while on cooldown);
@@ -395,12 +401,53 @@ static void ClosePreviousInstanceIfRunning(const char* windowTitle) { (void)wind
 #define ARCHER_MAX_RANGE    (SCREEN_W * 0.55f)
 #define ARCHER_MIN_HIT_PCT  30.0f
 #define ARCHER_DIRECT_DMG   10
-#define ARCHER_ZONE_RAD     (BASE_RADIUS * 1.8f * 0.90f)
+#define ARCHER_ZONE_RAD     (BASE_RADIUS * 1.8f * 0.90f * 0.90f)
 #define ARCHER_ZONE_TIME    1.00f
 #define ARCHER_BURN_TICK_T  0.75f
 #define ARCHER_BURN_TICKS   3
 #define ARCHER_BURN_DMG     3
 #define BURN_ZONE_MAX       16
+
+// Pirate V1 update constants
+#define FLINTLOCK_CD            3.0f
+#define FLINTLOCK_BURST_DELAY   0.5f
+#define FLINTLOCK_BURST_CNT     3
+#define FLINTLOCK_DMG           10
+#define FLINTLOCK_HIT_PCT       50.0f
+#define FLINTLOCK_DETECT_R      (SCREEN_W * 0.25f)
+#define FLINTLOCK_BULLET_SPD    13.5f
+
+#define BOMB_CD                 3.0f
+#define BOMB_FLIGHT_T           0.92f   // 15% slower big-bomb flight (0.78 / 0.85)
+#define BOMB_DROP_T             0.25f   // 0.25s mid-air explosion & mini-bombs dropping to floor
+#define BOMB_TARGET_RAD         (SCREEN_W * 0.20f)
+#define MINI_BOMB_TRI_DIST      (BASE_RADIUS * 1.15f * 1.10f) // +10% spacing between mini-bombs
+#define MINI_BOMB_RAD           10.0f
+#define MINI_BOMB_LIFE          3.0f
+#define MINI_BOMB_DMG           8
+#define MINI_BOMB_EXPLODE_R     ((float)BASE_RADIUS * 0.90f)  // -10% mini-bomb explosion radius
+
+#define CANNON_CD               6.0f
+#define CANNON_SPEED            12.5f
+#define CANNON_FIRST_DMG        18
+#define CANNON_PIERCE_DMG       13
+#define CANNON_RAD              10.0f
+#define CANNON_MAX_ACC_DIST     ((float)SCREEN_W)
+#define CANNON_MIN_HIT_PCT      30.0f
+#define CANNON_MAX_DIST_SLOW    0.15f   // up to -15% speed decay over distance
+#define CANNON_FIRST_HIT_SLOW   0.05f   // immediate -5% speed on 1st target hit
+
+#define CAPTAIN_STANCE_TIME     2.0f
+#define CAPTAIN_ATTACK_DELAY    2.0f
+#define CAPTAIN_GUN_RANGE       (BASE_RADIUS * 3.25f)
+#define CAPTAIN_GUN_DMG         10
+#define CAPTAIN_GUN_CRIT        0.25f
+#define CAPTAIN_SWORD_DMG       10
+#define CAPTAIN_SWORD_CRIT      0.50f
+
+#define FLINT_BULLET_MAX        32
+#define MINI_BOMB_MAX           32
+#define CANNON_BALL_MAX         16
 
 // Colors
 #define COL_DEVIL           (Color){ 120, 0, 10, 255 }
@@ -434,6 +481,10 @@ static void ClosePreviousInstanceIfRunning(const char* windowTitle) { (void)wind
 #define COL_CATAPULT        (Color){ 188, 118, 52, 255 }
 #define COL_ARCHER          (Color){ 46, 148, 66, 255 }
 #define COL_SQUIRE          (Color){ 232, 202, 135, 255 }
+#define COL_FLINTLOCK       (Color){ 138, 86, 46, 255 }
+#define COL_BOMB            (Color){ 48, 52, 60, 255 }
+#define COL_CANNON          (Color){ 165, 112, 64, 255 }
+#define COL_CAPTAIN         (Color){ 36, 38, 48, 255 }
 #define COL_BLOOD           (Color){ 160, 0, 0, 255 }
 #define COL_POISON          (Color){ 30, 160, 50, 255 }
 #define COL_HEAL            (Color){ 150, 240, 150, 255 }
@@ -458,6 +509,7 @@ typedef enum {
     TYPE_SPIDER, TYPE_RANGE,
     TYPE_KNIGHT, TYPE_CAVALRY, TYPE_EXECUTER, TYPE_KING,
     TYPE_CATAPULT, TYPE_ARCHER, TYPE_SQUIRE,
+    TYPE_FLINTLOCK, TYPE_BOMB, TYPE_CANNON, TYPE_CAPTAIN,
     TYPE_COUNT,
     TYPE_REFORGE_SUB = 99
 } BallType;
@@ -466,7 +518,7 @@ typedef enum { T_READY, T_FLYING, T_LANDED, T_RETURNING } TridentState;
 typedef enum { N_WAIT, N_RELOADING, N_THROWING } NinjaState;
 typedef enum { CACTUS_HOLD, CACTUS_POKE, CACTUS_DUMP } CactusAIMode;
 typedef enum { CHESS_NONE = 0, CHESS_QUEEN, CHESS_ROOK, CHESS_KNIGHT, CHESS_BISHOP } ChessPiece;
-typedef enum { P_DAMAGE, P_SLOW, P_POISON, P_HEAL, P_FREEZE, P_COUNT } PotionKind;
+typedef enum { P_DAMAGE, P_SLOW, P_POISON, P_HEAL, P_FREEZE, P_WEAKNESS, P_STRENGTHEN, P_COUNT } PotionKind;
 
 typedef struct {
     Vector2 pos;
@@ -704,6 +756,46 @@ typedef struct {
 } ArcherData;
 
 typedef struct {
+    float cooldown;         // 3.0s cooldown (starts only after 3rd shot is fired)
+    int burstLeft;          // 0..3 shots remaining in current burst
+    float burstTimer;       // 0.5s delay between burst shots
+    float aimAngle;
+    float muzzleFlash;
+} FlintlockData;
+
+typedef struct {
+    float cooldown;         // 3.0s cooldown counted from when big bomb leaves Bomb
+    bool airActive;
+    float airTimer;         // 0.0 -> BOMB_FLIGHT_T
+    Vector2 airStart;
+    Vector2 airTarget;
+    bool dropActive;        // 0.25s mid-air explosion -> 3 mini-bombs falling to floor
+    float dropTimer;
+    Vector2 dropOrigin;
+    Vector2 dropTargets[3];
+    float dropDmgMult;
+    float aimAngle;
+} BombData;
+
+typedef struct {
+    float cooldown;         // 6.0s cooldown between cannon shots
+    float aimAngle;
+    float recoilTimer;
+} CannonData;
+
+typedef struct {
+    int stance;             // 0 = Gun stance, 1 = Sword stance
+    float stanceTimer;      // 2.0s auto-switch timer
+    float attackDelay;      // 2.0s global delay between gun & sword attacks
+    float aimAngle;
+    float slashTimer;       // horizontal cutlass slash arc animation timer
+    float slashAngle;
+    float gunFlashTimer;    // muzzle flash & tracer line timer
+    Vector2 gunEndPos;
+    float hatWavePhase;     // fluttering pirate hat & feathers phase
+} CaptainData;
+
+typedef struct {
     Vector2 pos;
     float radius;           // 1.8x ball radius (54px)
     float age;
@@ -798,12 +890,14 @@ typedef struct {
     bool charged;
     float chargeTimer;
 
-    // Witch debuffs
+    // Witch debuffs & buffs
     float slowYTimer;
     float slowPTimer;
     int poisonTicks;
     float poisonTick;
     float poisonDmgMult;
+    float weaknessTimer;
+    float strengthTimer;
 
     // Archer burn debuff (3 HP every 0.75s for 3 ticks = 9 HP total)
     int burnTicks;
@@ -844,6 +938,10 @@ typedef struct {
     KingData king;
     CatapultData catapult;
     ArcherData archer;
+    FlintlockData flintlock;
+    BombData bomb;
+    CannonData cannon;
+    CaptainData captain;
 
     IceSeg ice[ICE_MAX];
     int iceHead;
@@ -922,11 +1020,52 @@ typedef struct {
     bool active;
 } BlackHole;
 
+typedef struct {
+    Vector2 pos;
+    Vector2 vel;
+    int team;
+    float dmgMult;
+    bool active;
+} FlintBullet;
+
+typedef struct {
+    Vector2 pos;
+    float age;              // 0.0 -> MINI_BOMB_LIFE (3.0s)
+    int team;
+    float dmgMult;
+    bool active;
+} MiniBomb;
+
+typedef struct {
+    Vector2 pos;
+    Vector2 vel;
+    Vector2 dir;
+    float travelled;
+    float hitPenalty;       // 1.0f initially; drops to 0.95f (-5%) immediately on 1st target hit
+    int team;
+    float dmgMult;
+    unsigned int hitMask;
+    int hitCount;
+    bool active;
+} CannonBall;
+
 typedef struct { Vector2 pos, target; PotionKind kind; int ownerIdx; bool active; } Potion;
 typedef struct { Vector2 pos; float radius, age; PotionKind kind; int ownerIdx; bool hit[MAX_BALLS]; bool active; } Zone;
 typedef struct { Vector2 pos; float radius, age; Color col; bool active; } BoomFx;
 typedef struct { Vector2 pos, vel; float age, life, size, grav; Color col; bool plus, active; } Particle;
-typedef struct { Vector2 pos; int value; float age; bool heal; bool active; } Popup;
+typedef struct {
+    Vector2 pos;
+    int value;
+    float age;
+    float fadeAge;
+    int ownerIdx;
+    bool heal;
+    bool isImmune;
+    bool isReduced;
+    bool isCrit;
+    bool fading;
+    bool active;
+} Popup;
 
 // ======================= SMALL MATH HELPERS =======================
 static inline Vector2 V2Add(Vector2 a, Vector2 b) { return (Vector2){ a.x + b.x, a.y + b.y }; }
@@ -989,13 +1128,14 @@ static void DrawCenteredText(const char* text, int y, int fontSize, Color col)
 }
 
 // ======================= GLOBAL STATE & EFFECTS =======================
-#define POPUP_MAX    64
-#define POPUP_TIME   0.9f
-#define PARTICLE_MAX 360
-#define POTION_MAX   48
-#define ZONE_MAX     16
-#define FX_MAX       48
-#define FX_TIME      0.35f
+#define POPUP_MAX       64
+#define POPUP_HOLD_TIME 1.0f
+#define POPUP_FADE_TIME 0.1f
+#define PARTICLE_MAX    360
+#define POTION_MAX      48
+#define ZONE_MAX        16
+#define FX_MAX          48
+#define FX_TIME         0.35f
 
 static Ball        g_balls[MAX_BALLS];
 static int         g_ballCount = 0;
@@ -1009,6 +1149,9 @@ static WindTornado g_tornados[TORNADO_MAX];         static int g_tornadoNext = 0
 static GunBullet   g_bullets[GUN_BULLET_MAX];       static int g_bulletNext = 0;
 static TarotCard   g_tarots[TAROT_MAX];             static int g_tarotNext = 0;
 static BlackHole   g_blackHoles[BLACKHOLE_MAX];     static int g_blackHoleNext = 0;
+static FlintBullet g_flintBullets[FLINT_BULLET_MAX];static int g_flintBulletNext = 0;
+static MiniBomb    g_miniBombs[MINI_BOMB_MAX];      static int g_miniBombNext = 0;
+static CannonBall  g_cannonBalls[CANNON_BALL_MAX];  static int g_cannonBallNext = 0;
 static float       g_diceRedFlashTimer = 0.0f;      // red screen border flash when Dice deals damage
 static Popup       g_popups[POPUP_MAX];             static int g_popupNext = 0;
 static Particle    g_particles[PARTICLE_MAX];       static int g_particleNext = 0;
@@ -1017,14 +1160,38 @@ static Zone        g_zones[ZONE_MAX];               static int g_zoneNext = 0;
 static BurnZone    g_burnZones[BURN_ZONE_MAX];      static int g_burnZoneNext = 0;
 static BoomFx      g_fx[FX_MAX];                    static int g_fxNext = 0;
 
-static void AddPopup(Vector2 pos, int value, bool heal)
+static void AddPopupEx(Vector2 pos, int ownerIdx, int value, bool heal, bool isImmune, bool isReduced, bool isCrit)
 {
+    // If this ball already has an active non-heal damage/immune popup still holding,
+    // immediately transition it into the 0.1s fade-out state.
+    if (!heal && ownerIdx >= 0) {
+        for (int i = 0; i < POPUP_MAX; i++) {
+            if (g_popups[i].active && !g_popups[i].heal && !g_popups[i].fading && g_popups[i].ownerIdx == ownerIdx) {
+                g_popups[i].fading = true;
+                g_popups[i].fadeAge = 0.0f;
+            }
+        }
+    }
     Popup* p = &g_popups[g_popupNext];
     g_popupNext = (g_popupNext + 1) % POPUP_MAX;
     *p = (Popup){
         .pos = { pos.x + (float)GetRandomValue(-18, 18), pos.y },
-        .value = value, .age = 0.0f, .heal = heal, .active = true
+        .value = value,
+        .age = 0.0f,
+        .fadeAge = 0.0f,
+        .ownerIdx = ownerIdx,
+        .heal = heal,
+        .isImmune = isImmune,
+        .isReduced = isReduced,
+        .isCrit = isCrit,
+        .fading = false,
+        .active = true
     };
+}
+
+static void AddPopup(Vector2 pos, int value, bool heal)
+{
+    AddPopupEx(pos, -1, value, heal, false, false, false);
 }
 
 static void SpawnParticle(Vector2 pos, Vector2 vel, float life, float size, Color col, float grav, bool plus)
@@ -1035,6 +1202,19 @@ static void SpawnParticle(Vector2 pos, Vector2 vel, float life, float size, Colo
         .pos = pos, .vel = vel, .age = 0.0f, .life = life,
         .size = size, .grav = grav, .col = col, .plus = plus, .active = true
     };
+}
+
+static void SpawnWhiteCollisionSparks(Vector2 pos)
+{
+    int count = GetRandomValue(5, 8);
+    for (int i = 0; i < count; i++) {
+        float ang = (float)GetRandomValue(0, 359) * DEG2RAD;
+        float spd = 1.8f + (float)GetRandomValue(0, 28) * 0.1f;
+        Vector2 vel = { cosf(ang) * spd, sinf(ang) * spd };
+        Color col = (i % 3 == 0) ? (Color){ 230, 240, 255, 255 } : WHITE;
+        SpawnParticle(pos, vel, (float)GetRandomValue(16, 28) / 100.0f,
+                      (float)GetRandomValue(2, 3), col, 0.06f, false);
+    }
 }
 
 static void AddFx(Vector2 pos, float radius, Color col)
@@ -1069,6 +1249,9 @@ static void ClearEffects(void)
     memset(g_bullets, 0, sizeof(g_bullets));
     memset(g_tarots, 0, sizeof(g_tarots));
     memset(g_blackHoles, 0, sizeof(g_blackHoles));
+    memset(g_flintBullets, 0, sizeof(g_flintBullets));
+    memset(g_miniBombs, 0, sizeof(g_miniBombs));
+    memset(g_cannonBalls, 0, sizeof(g_cannonBalls));
     g_diceRedFlashTimer = 0.0f;
     memset(g_popups, 0, sizeof(g_popups));
     memset(g_particles, 0, sizeof(g_particles));
@@ -1193,7 +1376,9 @@ static inline bool IsFixed(const Ball* b)
 
 static inline float SlowMult(const Ball* b)
 {
-    return (b->slowYTimer > 0.0f ? 0.5f : 1.0f) * (b->slowPTimer > 0.0f ? 0.9f : 1.0f);
+    float yMult = (b->slowYTimer > 0.0f) ? (1.0f - 0.60f * ClampF(b->slowYTimer / 2.5f, 0.0f, 1.0f)) : 1.0f;
+    float pMult = (b->slowPTimer > 0.0f) ? 0.9f : 1.0f;
+    return yMult * pMult;
 }
 
 static void RestoreVelocity(Ball* b)
@@ -1491,6 +1676,45 @@ static int InitBallStats(int idx, BallType type, int team, Vector2 startPos)
             b->color = COL_SQUIRE;
             b->damage = SQUIRE_BASE_DMG; // 10 base contact damage
             break;
+        case TYPE_FLINTLOCK:
+            b->color = COL_FLINTLOCK;
+            b->damage = 0;
+            b->flintlock.cooldown = FLINTLOCK_CD;
+            b->flintlock.burstLeft = 0;
+            b->flintlock.burstTimer = 0.0f;
+            b->flintlock.aimAngle = 0.0f;
+            b->flintlock.muzzleFlash = 0.0f;
+            break;
+        case TYPE_BOMB:
+            b->color = COL_BOMB;
+            b->damage = 0;
+            b->bomb.cooldown = BOMB_CD;
+            b->bomb.airActive = false;
+            b->bomb.airTimer = 0.0f;
+            b->bomb.dropActive = false;
+            b->bomb.dropTimer = 0.0f;
+            b->bomb.aimAngle = 0.0f;
+            break;
+        case TYPE_CANNON:
+            b->color = COL_CANNON;
+            b->damage = 0;
+            b->cannon.cooldown = CANNON_CD;
+            b->cannon.aimAngle = 0.0f;
+            b->cannon.recoilTimer = 0.0f;
+            break;
+        case TYPE_CAPTAIN:
+            b->color = COL_CAPTAIN;
+            b->damage = 0;
+            b->captain.stance = 0; // Start in Gun stance
+            b->captain.stanceTimer = CAPTAIN_STANCE_TIME;
+            b->captain.attackDelay = 0.0f;
+            b->captain.aimAngle = 0.0f;
+            b->captain.slashTimer = 0.0f;
+            b->captain.slashAngle = 0.0f;
+            b->captain.gunFlashTimer = 0.0f;
+            b->captain.gunEndPos = b->pos;
+            b->captain.hatWavePhase = (float)GetRandomValue(0, 628) * 0.01f;
+            break;
         default: break;
     }
     return idx;
@@ -1549,20 +1773,37 @@ static float LerpChance(int hp, int hpHigh, int hpLow, float minPct, float maxPc
     return minPct + t * (maxPct - minPct);
 }
 
-static void DealDamageScaled(Ball* victim, int dmg, bool bypass, float atkMult)
+static bool IsBallDamageImmune(const Ball* b)
+{
+    if (!IsCombatBall(b)) return false;
+    if (IsKingDashing(b)) return true;
+    if (b->type == TYPE_CHESS && b->chess.active) return true;
+    if (b->type == TYPE_JUDGEMENT && (b->judgement.state == 2 || b->judgement.immuneTimer > 0.0f)) return true;
+    if (b->shocked || b->diceLocked) return true;
+    return false;
+}
+
+static void DealDamageEx(Ball* victim, int dmg, bool bypass, float atkMult, bool isCrit, bool preReduced)
 {
     if (!IsCombatBall(victim)) return;
-    // King is completely immune to ALL damage while dashing to its flag
-    if (IsKingDashing(victim)) return;
-    // Judgement is 100% immune to damage while ramming (state == 2) and for 0.50s after finishing the ram
-    if (victim->type == TYPE_JUDGEMENT && (victim->judgement.state == 2 || victim->judgement.immuneTimer > 0.0f)) return;
-    // Shocked or Dice-locked targets are invulnerable to external damage
-    if (!bypass && (victim->shocked || victim->diceLocked)) return;
+    int vicIdx = (int)(victim - g_balls);
+    if (vicIdx < 0 || vicIdx >= g_ballCount) vicIdx = -1;
+
+    // 100% immunity checks: emit white "IMMUNE" popup instead of -HP
+    bool hardImmune = IsKingDashing(victim) ||
+                      (victim->type == TYPE_CHESS && victim->chess.active) ||
+                      (victim->type == TYPE_JUDGEMENT && (victim->judgement.state == 2 || victim->judgement.immuneTimer > 0.0f)) ||
+                      (!bypass && (victim->shocked || victim->diceLocked));
+    if (hardImmune) {
+        if (dmg > 0) AddPopupEx(victim->pos, vicIdx, 0, false, true, false, false);
+        return;
+    }
 
     // Impossible Bot passive: 5% chance to be 100% immune to incoming damage
     if (!bypass && victim->dodgeChance > 0.0f && dmg > 0) {
         if (GetRandomValue(1, 1000) <= (int)(victim->dodgeChance * 1000.0f)) {
             AddFx(victim->pos, (float)victim->radius * 1.15f, WHITE);
+            AddPopupEx(victim->pos, vicIdx, 0, false, true, false, false);
             return;
         }
     }
@@ -1572,16 +1813,20 @@ static void DealDamageScaled(Ball* victim, int dmg, bool bypass, float atkMult)
         if (dmg < 1) dmg = 1;
     }
 
+    bool reduced = preReduced;
+
     // Judgement takes 50% reduced damage during its 0.75s charge (state == 1)
     if (victim->type == TYPE_JUDGEMENT && victim->judgement.state == 1 && dmg > 0) {
         dmg = (int)roundf((float)dmg * 0.50f);
         if (dmg < 1) dmg = 1;
+        reduced = true;
     }
 
     // Squire takes 15% reduced incoming damage
     if (!bypass && victim->type == TYPE_SQUIRE && dmg > 0) {
         dmg = (int)roundf((float)dmg * (1.0f - SQUIRE_DMG_RED));
         if (dmg < 1) dmg = 1;
+        reduced = true;
     }
 
     // Impossible Bot passive: 10% chance to reduce incoming damage by 33%
@@ -1589,6 +1834,7 @@ static void DealDamageScaled(Ball* victim, int dmg, bool bypass, float atkMult)
         if (GetRandomValue(1, 1000) <= (int)(victim->dmgRedChance * 1000.0f)) {
             dmg = (int)roundf((float)dmg * 0.67f);
             if (dmg < 1) dmg = 1;
+            reduced = true;
             AddFx(victim->pos, (float)victim->radius * 1.05f, SKYBLUE);
         }
     }
@@ -1597,7 +1843,7 @@ static void DealDamageScaled(Ball* victim, int dmg, bool bypass, float atkMult)
     if (dmg > victim->hp) dmg = victim->hp;
     if (dmg <= 0) return;
     victim->hp -= dmg;
-    AddPopup(victim->pos, dmg, false);
+    AddPopupEx(victim->pos, vicIdx, dmg, false, false, reduced, isCrit);
 
     if (victim->hp <= 0) {
         if (victim->type == TYPE_REFORGE && victim->subIdx >= 0) {
@@ -1646,17 +1892,29 @@ static void DealDamageScaled(Ball* victim, int dmg, bool bypass, float atkMult)
     }
 }
 
-static inline void DealDamage(Ball* victim, int dmg, bool bypass) { DealDamageScaled(victim, dmg, bypass, 1.0f); }
-static inline void TakeDamage(Ball* victim, int dmg) { DealDamageScaled(victim, dmg, false, 1.0f); }
-static inline void TakeDamageFrom(Ball* victim, const Ball* attacker, int dmg) { DealDamageScaled(victim, dmg, false, attacker ? attacker->dmgMult : 1.0f); }
-static inline void TakeDamageScaled(Ball* victim, int dmg, float atkMult) { DealDamageScaled(victim, dmg, false, atkMult); }
+static inline float EffectiveDmgMult(const Ball* b)
+{
+    if (!b) return 1.0f;
+    float m = b->dmgMult;
+    if (b->strengthTimer > 0.0f) m *= 1.5f;
+    if (b->weaknessTimer > 0.0f) m *= 0.5f;
+    return m;
+}
+
+static inline void DealDamageScaled(Ball* victim, int dmg, bool bypass, float atkMult) { DealDamageEx(victim, dmg, bypass, atkMult, false, false); }
+static inline void DealDamage(Ball* victim, int dmg, bool bypass) { DealDamageEx(victim, dmg, bypass, 1.0f, false, false); }
+static inline void TakeDamage(Ball* victim, int dmg) { DealDamageEx(victim, dmg, false, 1.0f, false, false); }
+static inline void TakeDamageFrom(Ball* victim, const Ball* attacker, int dmg) { DealDamageEx(victim, dmg, false, EffectiveDmgMult(attacker), false, false); }
+static inline void TakeDamageFromEx(Ball* victim, const Ball* attacker, int dmg, bool isCrit, bool preReduced) { DealDamageEx(victim, dmg, false, EffectiveDmgMult(attacker), isCrit, preReduced); }
+static inline void TakeDamageScaled(Ball* victim, int dmg, float atkMult) { DealDamageEx(victim, dmg, false, atkMult, false, false); }
 
 static void HealBall(Ball* b, int amt)
 {
     if (!IsCombatBall(b) || b->hp >= b->maxHp) return;
     if (amt > b->maxHp - b->hp) amt = b->maxHp - b->hp;
     b->hp += amt;
-    AddPopup(b->pos, amt, true);
+    int idx = (int)(b - g_balls);
+    AddPopupEx(b->pos, idx, amt, true, false, false, false);
 }
 
 static void ApplyContact(int attIdx, int vicIdx)
@@ -1665,36 +1923,46 @@ static void ApplyContact(int attIdx, int vicIdx)
     Ball* victim   = &g_balls[vicIdx];
 
     if (!IsCombatBall(victim)) return;
-    if (IsKingDashing(victim)) return;
-    if (victim->frozen || victim->shocked || victim->diceLocked) return;
+    if (IsKingDashing(victim)) {
+        if (attacker->damage > 0 || (attacker->type == TYPE_CAPTAIN && attacker->captain.stance == 1 && attacker->captain.attackDelay <= 0.0f)) {
+            AddPopupEx(victim->pos, vicIdx, 0, false, true, false, false);
+        }
+        return;
+    }
+    if (victim->frozen || victim->shocked || victim->diceLocked) {
+        if ((victim->shocked || victim->diceLocked) && attacker->damage > 0) {
+            AddPopupEx(victim->pos, vicIdx, 0, false, true, false, false);
+        }
+        return;
+    }
     // Victims captured by Executer's 3.0s Sion-Q charge deal 0 contact dmg and are immune to external contact dmg
     if (attacker->execLocked || victim->execLocked) return;
 
     int dmg = attacker->damage;
+    bool contactCrit = false;
+    bool contactReduced = false;
 
-    // Shackless (TYPE_UNSHACKLED) Chain Lash passive:
-    // If holding >= 1 stack (max 3, lasts 3.0s) and 0.25s delay between lashes has elapsed,
-    // colliding with an enemy consumes 1 stack (-1 stack), resets the stack timer to 3.0s (if stacks > 0),
-    // deals 10 HP, and reduces the enemy's movement speed by 10%
-    if (attacker->type == TYPE_UNSHACKLED) {
-        if (attacker->unshackled.passiveStacks > 0 && attacker->unshackled.lashCooldown <= 0.0f) {
-            dmg = UNSHACKLED_LASH_DMG;
-            attacker->unshackled.passiveStacks--;
-            attacker->unshackled.passiveTimer = (attacker->unshackled.passiveStacks > 0) ? UNSHACKLED_STACK_TIME : 0.0f;
-            attacker->unshackled.lashCooldown = UNSHACKLED_LASH_DELAY;
-            attacker->unshackled.lashAnimTimer = 0.25f;
-            attacker->unshackled.lashAngle = atan2f(victim->pos.y - attacker->pos.y, victim->pos.x - attacker->pos.x);
-            victim->slowPTimer = 3.0f; // -10% movement speed
-            Vector2 mid = V2Mul(V2Add(attacker->pos, victim->pos), 0.5f);
-            AddFx(mid, (float)victim->radius * 1.15f, GOLD);
-            for (int k = 0; k < 8; k++) {
-                float a = (float)GetRandomValue(0, 359) * DEG2RAD;
-                float sp = 2.0f + (float)GetRandomValue(0, 20) * 0.1f;
-                SpawnParticle(mid, (Vector2){ cosf(a) * sp, sinf(a) * sp }, 0.32f, 3.2f, GOLD, 0.04f, false);
+    // Captain: Sword stance horizontal cutlass slash on contact (10 HP, 50% crit x2, switches immediately to Gun for 2s)
+    if (attacker->type == TYPE_CAPTAIN) {
+        dmg = 0;
+        if (attacker->captain.stance == 1 && attacker->captain.attackDelay <= 0.0f) {
+            dmg = CAPTAIN_SWORD_DMG;
+            if (GetRandomValue(1, 100) <= (int)(CAPTAIN_SWORD_CRIT * 100.0f)) {
+                dmg *= 2;
+                contactCrit = true;
             }
-        } else {
-            dmg = 0;
+            attacker->captain.slashAngle = atan2f(victim->pos.y - attacker->pos.y, victim->pos.x - attacker->pos.x);
+            attacker->captain.aimAngle = attacker->captain.slashAngle;
+            attacker->captain.slashTimer = 0.28f;
+            attacker->captain.stance = 0; // switch to Gun
+            attacker->captain.stanceTimer = CAPTAIN_STANCE_TIME;
+            attacker->captain.attackDelay = CAPTAIN_ATTACK_DELAY;
         }
+    }
+
+    // Shackless (TYPE_UNSHACKLED): 0 direct contact damage (Chain Lash triggers on 1.25x proximity in UpdateUnshackled)
+    if (attacker->type == TYPE_UNSHACKLED) {
+        dmg = 0;
     }
 
     // Knight: 0 direct contact damage, triggers a 0.10s delayed 30-degree cone slash toward the target
@@ -1720,15 +1988,15 @@ static void ApplyContact(int attIdx, int vicIdx)
             SpawnLanceSparks(mid);
 
             attacker->cavalry.state = 2;
-            attacker->cavalry.timer = CAVALRY_STUN_T;
+            attacker->cavalry.timer = CAVALRY_STUN_BALL_T;
             attacker->cavalry.speedMult = 1.0f;
             attacker->slamLocked = true;
-            attacker->slamLockTimer = CAVALRY_STUN_T;
+            attacker->slamLockTimer = CAVALRY_STUN_BALL_T;
             attacker->slamLockPos = attacker->pos;
 
             if (!IsKingDashing(victim)) {
                 victim->slamLocked = true;
-                victim->slamLockTimer = CAVALRY_STUN_T;
+                victim->slamLockTimer = CAVALRY_STUN_BALL_T;
                 victim->slamLockPos = victim->pos;
             }
         } else if (attacker->cavalry.state == 0) {
@@ -1777,6 +2045,7 @@ static void ApplyContact(int attIdx, int vicIdx)
         float kRed = (float)GetRandomValue(5, 40) * 0.01f;
         dmg = (int)roundf((float)dmg * (1.0f - kRed));
         if (dmg < 1) dmg = 1;
+        contactReduced = true;
     }
 
     if (victim->type == TYPE_GAMBLER) {
@@ -1800,24 +2069,27 @@ static void ApplyContact(int attIdx, int vicIdx)
                 TakeDamageFrom(attacker, victim, aceTotalDmg);
                 AddFx(attacker->pos, (float)attacker->radius * 1.35f, GOLD);
                 AddFx(victim->pos, (float)victim->radius * 1.25f, GOLD);
+                if (dmg > 0) AddPopupEx(victim->pos, vicIdx, 0, false, true, false, false);
                 dmg = 0;
             } else if (dmg > 0) {
                 victim->gambler.hasCardBuff = false;
                 victim->gambler.cardRank = 0;
                 if (rank >= 11) { // J, Q, K: take 0 damage
                     AddFx(victim->pos, (float)victim->radius * 1.2f, SKYBLUE);
+                    AddPopupEx(victim->pos, vicIdx, 0, false, true, false, false);
                     dmg = 0;
                 } else if (rank >= 2 && rank <= 10) {
                     float redPct = 0.10f + ((float)(rank - 2) / 8.0f) * 0.40f; // 10%..50%
                     dmg = (int)roundf((float)dmg * (1.0f - redPct));
                     if (dmg < 1) dmg = 1;
+                    contactReduced = true;
                 }
             }
         }
     }
 
     if (dmg > 0 && IsCombatBall(victim)) {
-        TakeDamageFrom(victim, attacker, dmg);
+        TakeDamageFromEx(victim, attacker, dmg, contactCrit, contactReduced);
     }
 
     // Charge resets its size and contact damage back to initial values after hitting an enemy
@@ -1953,7 +2225,7 @@ static void BounceHarpoonHookUnpredictable(HarpoonData* h)
 
     if (hitX || hitY) {
         float baseAngle = atan2f(h->vel.y, h->vel.x);
-        float jitter = (float)GetRandomValue(-38, 38) * DEG2RAD;
+        float jitter = (float)GetRandomValue(-30, 30) * DEG2RAD;
         float newAngle = baseAngle + jitter;
         Vector2 d = { cosf(newAngle), sinf(newAngle) };
 
@@ -2005,9 +2277,17 @@ static void UpdateHarpoon(int bIdx, float dt)
 
         for (int j = 0; j < g_ballCount; j++) {
             Ball* cand = &g_balls[j];
-            if (!IsCombatBall(cand) || cand->team == b->team || IsKingDashing(cand)) continue;
+            if (!IsAlive(cand) || cand->team == b->team || IsKingDashing(cand)) continue;
+            if (!IsCombatBall(cand) && cand->type != TYPE_REFORGE_SUB) continue;
             float hitR = cand->radius + HARPOON_HIT_BONUS;
             if (V2DistSq(h->pos, cand->pos) <= hitR * hitR) {
+                if (cand->type == TYPE_REFORGE_SUB) {
+                    AddFx(h->pos, 14.0f, LIGHTGRAY);
+                    h->state = H_READY;
+                    b->skillTimer = 3.0f;
+                    SetRandomDirection(b);
+                    break;
+                }
                 h->state = H_PULLING;
                 h->victimIdx = j;
                 h->trailCursor = (float)h->trailCount;
@@ -2219,10 +2499,15 @@ static void UpdateBow(Ball* b, float dt)
 
         for (int j = 0; j < g_ballCount; j++) {
             Ball* cand = &g_balls[j];
-            if (!IsCombatBall(cand) || cand->team == b->team) continue;
+            if (!IsAlive(cand) || cand->team == b->team) continue;
+            if (!IsCombatBall(cand) && cand->type != TYPE_REFORGE_SUB) continue;
             float hitR = cand->radius + 6.0f;
             if (V2DistSq(tip, cand->pos) <= hitR * hitR || V2DistSq(bw->pos, cand->pos) <= hitR * hitR) {
-                TakeDamageFrom(cand, b, BOW_ARROW_DMG);
+                if (cand->type != TYPE_REFORGE_SUB) {
+                    TakeDamageFrom(cand, b, BOW_ARROW_DMG);
+                } else {
+                    AddFx(tip, 10.0f, LIGHTGRAY);
+                }
                 bw->active = false;
                 break;
             }
@@ -3015,6 +3300,49 @@ static void UpdateUnshackled(Ball* b, float dt)
         }
     }
 
+    // Proximity Chain Lash (Sylas-style): if any enemy is within 1.25x ball radius,
+    // immediately sweep a circular chain lash (5% miss; on hit: 10 HP, -10% speed, +4 HP heal up to maxHp)
+    if ((u->mode == 0 || u->mode == 4) && u->passiveStacks > 0 && u->lashCooldown <= 0.0f) {
+        float lashR = (float)b->radius * UNSHACKLED_LASH_RAD_MULT;
+        bool enemyInRange = false;
+        for (int j = 0; j < g_ballCount; j++) {
+            Ball* e = &g_balls[j];
+            if (!IsCombatBall(e) || e->team == b->team) continue;
+            float hitR = lashR + (float)e->radius;
+            if (V2DistSq(b->pos, e->pos) <= hitR * hitR) {
+                enemyInRange = true;
+                break;
+            }
+        }
+        if (enemyInRange) {
+            u->passiveStacks--;
+            u->passiveTimer = (u->passiveStacks > 0) ? UNSHACKLED_STACK_TIME : 0.0f;
+            u->lashCooldown = UNSHACKLED_LASH_DELAY;
+            u->lashAnimTimer = 0.25f;
+            u->lashAngle = (float)GetRandomValue(0, 359) * DEG2RAD;
+
+            if (GetRandomValue(1, 100) > UNSHACKLED_LASH_MISS_PCT) {
+                bool hitAny = false;
+                for (int j = 0; j < g_ballCount; j++) {
+                    Ball* e = &g_balls[j];
+                    if (!IsCombatBall(e) || e->team == b->team) continue;
+                    float hitR = lashR + (float)e->radius;
+                    if (V2DistSq(b->pos, e->pos) <= hitR * hitR) {
+                        hitAny = true;
+                        TakeDamageFrom(e, b, UNSHACKLED_LASH_DMG);
+                        if (IsCombatBall(e)) e->slowPTimer = 3.0f;
+                        AddFx(e->pos, (float)e->radius * 1.1f, GOLD);
+                    }
+                }
+                if (hitAny) {
+                    HealBall(b, UNSHACKLED_LASH_HEAL);
+                }
+            } else {
+                AddFx(b->pos, lashR, LIGHTGRAY);
+            }
+        }
+    }
+
     if (u->mode == 0) {
         u->cooldown -= dt;
         if (u->cooldown <= 0.0f) {
@@ -3181,7 +3509,7 @@ static void UpdateUnshackled(Ball* b, float dt)
 
             u->fxKind = 3;
             u->fxPos = u->targetPos;
-            u->fxTimer = 0.55f;
+            u->fxTimer = 0.25f;
             u->mode = 0;
             u->cooldown = UNSHACKLED_CD;
             SetRandomDirection(b);
@@ -3648,13 +3976,6 @@ static void UpdateCavalry(Ball* b, float dt)
         float prog = ClampF(cv->travelled / (CAVALRY_MAX_DIST * 0.65f), 0.0f, 1.0f);
         cv->speedMult = 1.0f + (CAVALRY_MAX_MULT - 1.0f) * prog;
         cv->travelled += BASE_SPEED * cv->speedMult * SlowMult(b);
-
-        if (cv->travelled >= CAVALRY_MAX_DIST) {
-            // Reached max 50% window width without crashing into enemy or wall
-            cv->state = 0;
-            cv->speedMult = 1.0f;
-            cv->timer = CAVALRY_CD;
-        }
     } else if (cv->state == 2) {
         cv->speedMult = 1.0f;
         cv->timer -= dt;
@@ -3957,12 +4278,18 @@ static void UpdateArcher(Ball* b, float dt)
                           0.24f, 3.2f, fc, -0.03f, false);
         }
 
-        // Check direct hit against enemies
+        // Check direct hit against enemies (and Reforge sub-ball interception)
         for (int j = 0; j < g_ballCount; j++) {
             Ball* cand = &g_balls[j];
-            if (!IsCombatBall(cand) || cand->team == b->team) continue;
+            if (!IsAlive(cand) || cand->team == b->team) continue;
+            if (!IsCombatBall(cand) && cand->type != TYPE_REFORGE_SUB) continue;
             float hitR = (float)cand->radius + 6.0f;
             if (V2DistSq(tip, cand->pos) <= hitR * hitR || V2DistSq(ar->arrowPos, cand->pos) <= hitR * hitR) {
+                if (cand->type == TYPE_REFORGE_SUB) {
+                    AddFx(tip, 10.0f, LIGHTGRAY);
+                    ar->arrowActive = false;
+                    return;
+                }
                 TakeDamageFrom(cand, b, ARCHER_DIRECT_DMG); // 10 HP direct hit
                 if (IsCombatBall(cand)) {
                     ApplyArcherBurn(cand, b->dmgMult); // guaranteed Burn on direct hit
@@ -3979,6 +4306,291 @@ static void UpdateArcher(Ball* b, float dt)
             ar->arrowTravelled >= ARCHER_MAX_RANGE) {
             CreateBurnZone(ClampScreen(tip, 14.0f), ARCHER_ZONE_RAD, b->team, b->dmgMult);
             ar->arrowActive = false;
+        }
+    }
+}
+
+static void FireFlintlockShot(Ball* b, const Ball* enemy)
+{
+    FlintlockData* fl = &b->flintlock;
+    float baseAngle = fl->aimAngle;
+    if (enemy) {
+        float dist = sqrtf(V2DistSq(enemy->pos, b->pos));
+        float tFrames = dist / FLINTLOCK_BULLET_SPD;
+        Vector2 pred = V2Add(enemy->pos, V2Mul(enemy->vel, tFrames * 0.78f));
+        baseAngle = atan2f(pred.y - b->pos.y, pred.x - b->pos.x);
+        fl->aimAngle = baseAngle;
+    }
+
+    float angle;
+    if (GetRandomValue(1, 100) <= (int)FLINTLOCK_HIT_PCT) {
+        float jitter = ((float)GetRandomValue(-100, 100) / 100.0f) * 2.2f * DEG2RAD;
+        angle = baseAngle + jitter;
+    } else {
+        int sign = (GetRandomValue(0, 1) == 0) ? -1 : 1;
+        float missDeg = 18.0f + (float)GetRandomValue(0, 16);
+        angle = baseAngle + (float)sign * missDeg * DEG2RAD;
+    }
+
+    Vector2 muzzle = {
+        b->pos.x + cosf(fl->aimAngle) * ((float)b->radius + 10.0f),
+        b->pos.y + sinf(fl->aimAngle) * ((float)b->radius + 10.0f)
+    };
+    FlintBullet* fb = &g_flintBullets[g_flintBulletNext];
+    g_flintBulletNext = (g_flintBulletNext + 1) % FLINT_BULLET_MAX;
+    *fb = (FlintBullet){
+        .pos = muzzle,
+        .vel = { cosf(angle) * FLINTLOCK_BULLET_SPD, sinf(angle) * FLINTLOCK_BULLET_SPD },
+        .team = b->team,
+        .dmgMult = EffectiveDmgMult(b),
+        .active = true
+    };
+    fl->muzzleFlash = 0.14f;
+    for (int k = 0; k < 5; k++) {
+        float sa = fl->aimAngle + ((float)GetRandomValue(-35, 35) * DEG2RAD);
+        float sp = 1.5f + (float)GetRandomValue(0, 22) * 0.1f;
+        SpawnParticle(muzzle, (Vector2){ cosf(sa) * sp, sinf(sa) * sp }, 0.18f, 3.0f,
+                      (k % 2 == 0) ? GOLD : LIGHTGRAY, 0.04f, false);
+    }
+}
+
+static void UpdateFlintlock(Ball* b, float dt)
+{
+    FlintlockData* fl = &b->flintlock;
+    if (fl->muzzleFlash > 0.0f) fl->muzzleFlash = fmaxf(0.0f, fl->muzzleFlash - dt);
+
+    Ball* enemy = FindNearestEnemy(b);
+    if (enemy) {
+        fl->aimAngle = atan2f(enemy->pos.y - b->pos.y, enemy->pos.x - b->pos.x);
+    }
+
+    if (fl->burstLeft > 0) {
+        fl->burstTimer -= dt;
+        if (fl->burstTimer <= 0.0f) {
+            FireFlintlockShot(b, enemy);
+            fl->burstLeft--;
+            if (fl->burstLeft > 0) {
+                fl->burstTimer = FLINTLOCK_BURST_DELAY;
+            } else {
+                // 3.0s cooldown starts ONLY after the 3rd bullet is fired
+                fl->cooldown = FLINTLOCK_CD;
+            }
+        }
+    } else {
+        if (fl->cooldown > 0.0f) {
+            fl->cooldown = fmaxf(0.0f, fl->cooldown - dt);
+        }
+        // When CD is ready (<= 0), only fire if an enemy is within 25% window width; otherwise wait
+        if (fl->cooldown <= 0.0f && enemy) {
+            float detectR = FLINTLOCK_DETECT_R + (float)enemy->radius;
+            if (V2DistSq(b->pos, enemy->pos) <= detectR * detectR) {
+                FireFlintlockShot(b, enemy);
+                fl->burstLeft = FLINTLOCK_BURST_CNT - 1;
+                fl->burstTimer = FLINTLOCK_BURST_DELAY;
+            }
+        }
+    }
+}
+
+// Predictive AI for Bomb: simulates target's movement (including wall bounces) over leadTime seconds
+static Vector2 PredictBombTargetPos(const Ball* target, float leadTime)
+{
+    if (!target) return (Vector2){ SCREEN_W * 0.5f, SCREEN_H * 0.5f };
+    if (IsFixed(target)) return target->pos;
+
+    float minX = (float)target->radius, maxX = (float)(SCREEN_W - target->radius);
+    float minY = (float)target->radius, maxY = (float)(SCREEN_H - target->radius);
+    Vector2 p = target->pos;
+    Vector2 v = V2Mul(target->vel, SlowMult(target));
+    int steps = (int)roundf(leadTime * 60.0f);
+    if (steps < 1) steps = 1;
+    for (int s = 0; s < steps; s++) {
+        p.x += v.x;
+        p.y += v.y;
+        if (p.x > maxX)      { p.x = maxX - (p.x - maxX); v.x = -fabsf(v.x); }
+        else if (p.x < minX) { p.x = minX + (minX - p.x); v.x =  fabsf(v.x); }
+        if (p.y > maxY)      { p.y = maxY - (p.y - maxY); v.y = -fabsf(v.y); }
+        else if (p.y < minY) { p.y = minY + (minY - p.y); v.y =  fabsf(v.y); }
+    }
+    return ClampScreen(p, 38.0f);
+}
+
+static void UpdateBomb(Ball* b, float dt)
+{
+    BombData* bm = &b->bomb;
+
+    // 3.0s cooldown counts immediately from when the big bomb leaves Bomb
+    if (bm->cooldown > 0.0f) {
+        bm->cooldown = fmaxf(0.0f, bm->cooldown - dt);
+    }
+
+    // Phase 1: big bomb flying in parabolic arc
+    if (bm->airActive) {
+        bm->airTimer += dt;
+        if (bm->airTimer >= BOMB_FLIGHT_T) {
+            bm->airActive = false;
+            // Explodes mid-air (0 damage) and begins 0.25s drop animation for the 3 mini-bombs
+            bm->dropActive = true;
+            bm->dropTimer = 0.0f;
+            bm->dropOrigin = bm->airTarget;
+            bm->dropDmgMult = EffectiveDmgMult(b);
+
+            AddFx((Vector2){ bm->airTarget.x, bm->airTarget.y - 36.0f }, 26.0f, (Color){ 95, 95, 102, 230 });
+            for (int k = 0; k < 12; k++) {
+                float a = (float)GetRandomValue(0, 359) * DEG2RAD;
+                float sp = 1.6f + (float)GetRandomValue(0, 26) * 0.1f;
+                SpawnParticle((Vector2){ bm->airTarget.x, bm->airTarget.y - 36.0f },
+                              (Vector2){ cosf(a) * sp, sinf(a) * sp }, 0.30f, 3.6f,
+                              (k % 2 == 0) ? DARKGRAY : ORANGE, 0.05f, false);
+            }
+            float baseAng = (float)GetRandomValue(0, 359) * DEG2RAD;
+            for (int k = 0; k < 3; k++) {
+                float ang = baseAng + (float)k * (2.0f * PI / 3.0f);
+                Vector2 mPos = {
+                    bm->airTarget.x + cosf(ang) * MINI_BOMB_TRI_DIST,
+                    bm->airTarget.y + sinf(ang) * MINI_BOMB_TRI_DIST
+                };
+                bm->dropTargets[k] = ClampScreen(mPos, MINI_BOMB_RAD + 4.0f);
+            }
+        }
+    }
+
+    // Phase 2: 0.25s mid-air explosion & mini-bombs dropping onto the floor
+    if (bm->dropActive) {
+        bm->dropTimer += dt;
+        if (bm->dropTimer >= BOMB_DROP_T) {
+            bm->dropActive = false;
+            for (int k = 0; k < 3; k++) {
+                MiniBomb* mb = &g_miniBombs[g_miniBombNext];
+                g_miniBombNext = (g_miniBombNext + 1) % MINI_BOMB_MAX;
+                *mb = (MiniBomb){
+                    .pos = bm->dropTargets[k],
+                    .age = 0.0f,
+                    .team = b->team,
+                    .dmgMult = bm->dropDmgMult,
+                    .active = true
+                };
+                AddFx(bm->dropTargets[k], 12.0f, (Color){ 80, 80, 86, 180 });
+            }
+        }
+    }
+
+    // Ready to throw a new big bomb when CD expires and no big bomb is currently mid-air/dropping
+    Ball* farEnemy = FindFarthestEnemy(b);
+    if (farEnemy) {
+        bm->aimAngle = atan2f(farEnemy->pos.y - b->pos.y, farEnemy->pos.x - b->pos.x);
+    }
+    if (!bm->airActive && !bm->dropActive && bm->cooldown <= 0.0f && farEnemy) {
+        bm->cooldown = BOMB_CD; // starts counting immediately as the big bomb leaves Bomb
+        Vector2 predictedCenter = PredictBombTargetPos(farEnemy, BOMB_FLIGHT_T + BOMB_DROP_T);
+        float randAng = (float)GetRandomValue(0, 359) * DEG2RAD;
+        float randR = sqrtf((float)GetRandomValue(0, 1000) / 1000.0f) * BOMB_TARGET_RAD;
+        Vector2 tgt = {
+            predictedCenter.x + cosf(randAng) * randR,
+            predictedCenter.y + sinf(randAng) * randR
+        };
+        tgt = ClampScreen(tgt, 38.0f);
+        bm->airActive = true;
+        bm->airTimer = 0.0f;
+        bm->airStart = b->pos;
+        bm->airTarget = tgt;
+        bm->aimAngle = atan2f(tgt.y - b->pos.y, tgt.x - b->pos.x);
+    }
+}
+
+static void UpdateCannon(Ball* b, float dt)
+{
+    CannonData* cn = &b->cannon;
+    if (cn->recoilTimer > 0.0f) cn->recoilTimer = fmaxf(0.0f, cn->recoilTimer - dt);
+
+    Ball* enemy = FindNearestEnemy(b);
+    if (enemy) {
+        cn->aimAngle = atan2f(enemy->pos.y - b->pos.y, enemy->pos.x - b->pos.x);
+    }
+
+    cn->cooldown -= dt;
+    if (cn->cooldown <= 0.0f && enemy) {
+        cn->cooldown = CANNON_CD;
+        cn->recoilTimer = 0.28f;
+        // Miss rate increases linearly with distance from 0% to 70% (hit chance 100% -> 30%)
+        float angle = AimAngleWithDistanceFalloff(b->pos, enemy, CANNON_SPEED,
+                                                  CANNON_MAX_ACC_DIST, 100.0f, CANNON_MIN_HIT_PCT);
+        cn->aimAngle = angle;
+        Vector2 dir = { cosf(angle), sinf(angle) };
+        Vector2 muzzle = {
+            b->pos.x + dir.x * ((float)b->radius + 14.0f),
+            b->pos.y + dir.y * ((float)b->radius + 14.0f)
+        };
+        CannonBall* cb = &g_cannonBalls[g_cannonBallNext];
+        g_cannonBallNext = (g_cannonBallNext + 1) % CANNON_BALL_MAX;
+        *cb = (CannonBall){
+            .pos = muzzle,
+            .vel = V2Mul(dir, CANNON_SPEED),
+            .dir = dir,
+            .travelled = 0.0f,
+            .hitPenalty = 1.0f,
+            .team = b->team,
+            .dmgMult = EffectiveDmgMult(b),
+            .hitMask = 0,
+            .hitCount = 0,
+            .active = true
+        };
+        AddFx(muzzle, 16.0f, ORANGE);
+        for (int k = 0; k < 10; k++) {
+            float sa = angle + ((float)GetRandomValue(-40, 40) * DEG2RAD);
+            float sp = 1.8f + (float)GetRandomValue(0, 30) * 0.1f;
+            SpawnParticle(muzzle, (Vector2){ cosf(sa) * sp, sinf(sa) * sp }, 0.26f, 4.0f,
+                          (k % 3 == 0) ? ORANGE : DARKGRAY, 0.04f, false);
+        }
+    }
+}
+
+static void UpdateCaptain(Ball* b, float dt)
+{
+    CaptainData* cp = &b->captain;
+    cp->hatWavePhase += dt * 7.5f;
+    if (cp->slashTimer > 0.0f)    cp->slashTimer = fmaxf(0.0f, cp->slashTimer - dt);
+    if (cp->gunFlashTimer > 0.0f) cp->gunFlashTimer = fmaxf(0.0f, cp->gunFlashTimer - dt);
+    if (cp->attackDelay > 0.0f)   cp->attackDelay = fmaxf(0.0f, cp->attackDelay - dt);
+
+    Ball* enemy = FindNearestEnemy(b);
+    if (enemy) {
+        cp->aimAngle = atan2f(enemy->pos.y - b->pos.y, enemy->pos.x - b->pos.x);
+    }
+
+    // Alternate Gun (0) and Sword (1) every 2.0s
+    cp->stanceTimer -= dt;
+    if (cp->stanceTimer <= 0.0f) {
+        cp->stance = 1 - cp->stance;
+        cp->stanceTimer = CAPTAIN_STANCE_TIME;
+    }
+
+    // Gun stance: shoot enemy within 3.25x ball radius (10 HP, 25% crit x2)
+    if (cp->stance == 0 && cp->attackDelay <= 0.0f && enemy) {
+        float gunR = CAPTAIN_GUN_RANGE + (float)enemy->radius;
+        if (V2DistSq(b->pos, enemy->pos) <= gunR * gunR) {
+            int dmg = CAPTAIN_GUN_DMG;
+            bool isCrit = (GetRandomValue(1, 100) <= (int)(CAPTAIN_GUN_CRIT * 100.0f));
+            if (isCrit) dmg *= 2;
+            TakeDamageFromEx(enemy, b, dmg, isCrit, false);
+
+            cp->aimAngle = atan2f(enemy->pos.y - b->pos.y, enemy->pos.x - b->pos.x);
+            cp->gunFlashTimer = 0.22f;
+            cp->gunEndPos = enemy->pos;
+            Vector2 muzzle = {
+                b->pos.x + cosf(cp->aimAngle) * ((float)b->radius + 10.0f),
+                b->pos.y + sinf(cp->aimAngle) * ((float)b->radius + 10.0f)
+            };
+            for (int k = 0; k < 7; k++) {
+                float sa = cp->aimAngle + ((float)GetRandomValue(-30, 30) * DEG2RAD);
+                float sp = 1.8f + (float)GetRandomValue(0, 26) * 0.1f;
+                SpawnParticle(muzzle, (Vector2){ cosf(sa) * sp, sinf(sa) * sp }, 0.20f, 3.2f,
+                              (k % 2 == 0) ? GOLD : ORANGE, 0.04f, false);
+            }
+            // Immediately switch to Sword for 2.0s and enforce 2.0s attack delay
+            cp->stance = 1;
+            cp->stanceTimer = CAPTAIN_STANCE_TIME;
+            cp->attackDelay = CAPTAIN_ATTACK_DELAY;
         }
     }
 }
@@ -4018,7 +4630,11 @@ static inline bool Overlaps(Vector2 c, float r, const Ball* b)
 
 static Color PotionColor(PotionKind k)
 {
-    static const Color cols[P_COUNT] = { RED, YELLOW, COL_POISON, COL_HEAL, COL_FREEZE };
+    static const Color cols[P_COUNT] = {
+        RED, YELLOW, COL_POISON, COL_HEAL, COL_FREEZE,
+        { 48, 48, 58, 255 },    // P_WEAKNESS (dark charcoal/black)
+        { 255, 70, 90, 255 }    // P_STRENGTHEN (bright crimson red)
+    };
     return (k >= 0 && k < P_COUNT) ? cols[k] : COL_FREEZE;
 }
 
@@ -4036,7 +4652,7 @@ static void ExplodePotion(PotionKind kind, Vector2 pos, int ownerIdx, bool direc
             for (int j = 0; j < g_ballCount; j++) {
                 Ball* e = &g_balls[j];
                 if (IsCombatBall(e) && e->team != w->team && Overlaps(pos, R, e))
-                    TakeDamageFrom(e, w, 15);
+                    TakeDamageFrom(e, w, 18);
             }
         } break;
 
@@ -4052,7 +4668,7 @@ static void ExplodePotion(PotionKind kind, Vector2 pos, int ownerIdx, bool direc
             AddFx(pos, R, COL_HEAL);
             for (int j = 0; j < g_ballCount; j++)
                 if (IsCombatBall(&g_balls[j]) && Overlaps(pos, R, &g_balls[j]))
-                    HealBall(&g_balls[j], 10);
+                    HealBall(&g_balls[j], 12);
             for (int i = 0; i < 8; i++) {
                 float a = (float)GetRandomValue(0, 359) * DEG2RAD;
                 float d = (float)GetRandomValue(0, (int)(R * 0.8f));
@@ -4067,11 +4683,33 @@ static void ExplodePotion(PotionKind kind, Vector2 pos, int ownerIdx, bool direc
             for (int j = 0; j < g_ballCount; j++) {
                 Ball* e = &g_balls[j];
                 if (IsCombatBall(e) && e->team != w->team && Overlaps(pos, R, e)) {
-                    TakeDamageFrom(e, w, 10);
+                    TakeDamageFrom(e, w, 7);
                     if (IsCombatBall(e) && !e->frozen && !e->shocked && e->freezeImmune <= 0.0f) {
-                        e->freezeDmgMult = w->dmgMult;
+                        e->freezeDmgMult = EffectiveDmgMult(w);
                         Freeze(e, WITCH_FREEZE_TIME);
                     }
+                }
+            }
+        } break;
+
+        case P_WEAKNESS: {
+            float R = base * 1.5f;
+            AddFx(pos, R, PotionColor(kind));
+            for (int j = 0; j < g_ballCount; j++) {
+                Ball* e = &g_balls[j];
+                if (IsCombatBall(e) && Overlaps(pos, R, e)) {
+                    e->weaknessTimer = 5.0f;
+                }
+            }
+        } break;
+
+        case P_STRENGTHEN: {
+            float R = base * 3.0f;
+            AddFx(pos, R, PotionColor(kind));
+            for (int j = 0; j < g_ballCount; j++) {
+                Ball* e = &g_balls[j];
+                if (IsCombatBall(e) && Overlaps(pos, R, e)) {
+                    e->strengthTimer = 5.0f;
                 }
             }
         } break;
@@ -4088,8 +4726,8 @@ static void WitchThrow(Ball* w, int ownerIdx)
     PotionKind kind = (PotionKind)GetRandomValue(0, P_COUNT - 1);
     Vector2 target;
 
-    if (kind == P_HEAL) {
-        if (GetRandomValue(1, 100) <= 15) {
+    if (kind == P_HEAL || kind == P_STRENGTHEN) {
+        if (GetRandomValue(1, 100) <= 7) {
             float a = (float)GetRandomValue(0, 359) * DEG2RAD;
             float d = (float)GetRandomValue(130, 200);
             target = (Vector2){ w->pos.x + cosf(a) * d, w->pos.y + sinf(a) * d };
@@ -4139,10 +4777,12 @@ static void UpdateEffects(float dt)
 
         for (int j = 0; j < g_ballCount; j++) {
             Ball* e = &g_balls[j];
-            if (!IsCombatBall(e) || e->team == kn->team) continue;
+            if (!IsAlive(e) || e->team == kn->team) continue;
+            if (!IsCombatBall(e) && e->type != TYPE_REFORGE_SUB) continue;
             float hitR = e->radius + 6.0f;
             if (V2DistSq(kn->pos, e->pos) <= hitR * hitR) {
-                TakeDamageScaled(e, KUNAI_DMG, kn->dmgMult);
+                if (e->type != TYPE_REFORGE_SUB) TakeDamageScaled(e, KUNAI_DMG, kn->dmgMult);
+                else AddFx(kn->pos, 9.0f, LIGHTGRAY);
                 kn->active = false;
                 break;
             }
@@ -4162,11 +4802,12 @@ static void UpdateEffects(float dt)
 
         for (int j = 0; j < g_ballCount; j++) {
             Ball* e = &g_balls[j];
-            if (!IsCombatBall(e) || e->team == tc->team) continue; // pierces teammates
+            if (!IsAlive(e) || e->team == tc->team) continue; // pierces teammates
+            if (!IsCombatBall(e) && e->type != TYPE_REFORGE_SUB) continue;
             float hitR = e->radius + 9.0f;
             if (V2DistSq(tc->pos, e->pos) <= hitR * hitR) {
-                TakeDamageScaled(e, TAROT_DMG, tc->dmgMult);
-                AddFx(tc->pos, 14.0f, tc->cardCol);
+                if (e->type != TYPE_REFORGE_SUB) TakeDamageScaled(e, TAROT_DMG, tc->dmgMult);
+                AddFx(tc->pos, 14.0f, (e->type == TYPE_REFORGE_SUB) ? LIGHTGRAY : tc->cardCol);
                 tc->active = false;
                 break;
             }
@@ -4220,10 +4861,12 @@ static void UpdateEffects(float dt)
 
         for (int j = 0; j < g_ballCount; j++) {
             Ball* e = &g_balls[j];
-            if (!IsCombatBall(e) || e->team == gb->team) continue;
+            if (!IsAlive(e) || e->team == gb->team) continue;
+            if (!IsCombatBall(e) && e->type != TYPE_REFORGE_SUB) continue;
             float hitR = (float)e->radius + GUN_BULLET_RAD;
             if (V2DistSq(gb->pos, e->pos) <= hitR * hitR) {
-                TakeDamageScaled(e, GUN_BULLET_DMG, gb->dmgMult);
+                if (e->type != TYPE_REFORGE_SUB) TakeDamageScaled(e, GUN_BULLET_DMG, gb->dmgMult);
+                else AddFx(gb->pos, 8.0f, LIGHTGRAY);
                 gb->active = false;
                 break;
             }
@@ -4247,10 +4890,16 @@ static void UpdateEffects(float dt)
         } else {
             for (int j = 0; j < g_ballCount; j++) {
                 Ball* e = &g_balls[j];
-                if (!IsCombatBall(e) || e->team == cb->team) continue;
+                if (!IsAlive(e) || e->team == cb->team) continue;
+                if (!IsCombatBall(e) && e->type != TYPE_REFORGE_SUB) continue;
                 float hitR = (float)(e->radius + CACTUS_BOMB_RAD);
                 if (V2DistSq(cb->pos, e->pos) <= hitR * hitR) {
-                    trigger = true;
+                    if (e->type == TYPE_REFORGE_SUB) {
+                        AddFx(cb->pos, 10.0f, LIGHTGRAY);
+                        cb->active = false;
+                    } else {
+                        trigger = true;
+                    }
                     break;
                 }
             }
@@ -4289,10 +4938,12 @@ static void UpdateEffects(float dt)
 
         for (int j = 0; j < g_ballCount; j++) {
             Ball* e = &g_balls[j];
-            if (!IsCombatBall(e) || e->team == sp->team) continue;
+            if (!IsAlive(e) || e->team == sp->team) continue;
+            if (!IsCombatBall(e) && e->type != TYPE_REFORGE_SUB) continue;
             float hitR = e->radius + 5.0f;
             if (V2DistSq(sp->pos, e->pos) <= hitR * hitR) {
-                TakeDamageScaled(e, CACTUS_SPIKE_DMG, sp->dmgMult);
+                if (e->type != TYPE_REFORGE_SUB) TakeDamageScaled(e, CACTUS_SPIKE_DMG, sp->dmgMult);
+                else AddFx(sp->pos, 8.0f, LIGHTGRAY);
                 sp->active = false;
                 break;
             }
@@ -4317,9 +4968,15 @@ static void UpdateEffects(float dt)
 
         for (int j = 0; j < g_ballCount; j++) {
             Ball* e = &g_balls[j];
-            if (!IsCombatBall(e) || e->team == wt->team || wt->hit[j]) continue;
+            if (!IsAlive(e) || e->team == wt->team || wt->hit[j]) continue;
+            if (!IsCombatBall(e) && e->type != TYPE_REFORGE_SUB) continue;
             float hitR = e->radius + TORNADO_RADIUS;
             if (V2DistSq(wt->pos, e->pos) <= hitR * hitR) {
+                if (e->type == TYPE_REFORGE_SUB) {
+                    AddFx(wt->pos, 12.0f, LIGHTGRAY);
+                    wt->active = false;
+                    break;
+                }
                 wt->hit[j] = true;
                 TakeDamageScaled(e, TORNADO_DMG, wt->dmgMult);
                 if (IsCombatBall(e)) StunWithWind(e, WIND_STUN_TIME);
@@ -4364,14 +5021,19 @@ static void UpdateEffects(float dt)
         if (!p->active) continue;
         int ownerTeam = g_balls[p->ownerIdx].team;
 
-        if (p->kind != P_HEAL) {
+        if (p->kind != P_HEAL && p->kind != P_STRENGTHEN) {
             bool hitDirect = false;
             for (int j = 0; j < g_ballCount; j++) {
                 Ball* e = &g_balls[j];
-                if (!IsCombatBall(e) || e->team == ownerTeam) continue;
+                if (!IsAlive(e) || e->team == ownerTeam) continue;
+                if (!IsCombatBall(e) && e->type != TYPE_REFORGE_SUB) continue;
                 float hitR = e->radius + 8.0f;
                 if (V2DistSq(e->pos, p->pos) <= hitR * hitR) {
-                    ExplodePotion(p->kind, p->pos, p->ownerIdx, true);
+                    if (e->type == TYPE_REFORGE_SUB) {
+                        AddFx(p->pos, 10.0f, LIGHTGRAY);
+                    } else {
+                        ExplodePotion(p->kind, p->pos, p->ownerIdx, true);
+                    }
                     p->active = false;
                     hitDirect = true;
                     break;
@@ -4415,13 +5077,13 @@ static void UpdateEffects(float dt)
             if (!Overlaps(z->pos, z->radius, e)) continue;
 
             if (z->kind == P_SLOW) {
-                e->slowYTimer = 2.0f;
-                if (!z->hit[j]) { z->hit[j] = true; TakeDamageScaled(e, 5, g_balls[z->ownerIdx].dmgMult); }
+                e->slowYTimer = 2.5f;
+                if (!z->hit[j]) { z->hit[j] = true; TakeDamageScaled(e, 3, EffectiveDmgMult(&g_balls[z->ownerIdx])); }
             } else if (z->kind == P_POISON && !z->hit[j]) {
                 z->hit[j] = true;
-                e->poisonTicks = 5;
-                e->poisonTick = 0.6f;
-                e->poisonDmgMult = g_balls[z->ownerIdx].dmgMult;
+                e->poisonTicks = 6;
+                e->poisonTick = 0.5f;
+                e->poisonDmgMult = EffectiveDmgMult(&g_balls[z->ownerIdx]);
                 e->slowPTimer = 3.0f;
             }
         }
@@ -4454,6 +5116,138 @@ static void UpdateEffects(float dt)
         }
     }
 
+    // Flintlock bullets (10 HP, intercepted by Reforge sub-ball, disappear at wall)
+    for (int i = 0; i < FLINT_BULLET_MAX; i++) {
+        FlintBullet* fb = &g_flintBullets[i];
+        if (!fb->active) continue;
+        fb->pos = V2Add(fb->pos, fb->vel);
+        if (fb->pos.x < -10 || fb->pos.x > SCREEN_W + 10 || fb->pos.y < -10 || fb->pos.y > SCREEN_H + 10) {
+            fb->active = false;
+            continue;
+        }
+        for (int j = 0; j < g_ballCount; j++) {
+            Ball* e = &g_balls[j];
+            if (!IsAlive(e) || e->team == fb->team) continue;
+            if (!IsCombatBall(e) && e->type != TYPE_REFORGE_SUB) continue;
+            float hitR = (float)e->radius + 5.0f;
+            if (V2DistSq(e->pos, fb->pos) <= hitR * hitR) {
+                if (e->type == TYPE_REFORGE_SUB) {
+                    AddFx(fb->pos, 10.0f, LIGHTGRAY);
+                } else {
+                    TakeDamageScaled(e, FLINTLOCK_DMG, fb->dmgMult);
+                    AddFx(fb->pos, 14.0f, GOLD);
+                }
+                fb->active = false;
+                break;
+            }
+        }
+    }
+
+    // Bomb mini-bombs (exist 3.0s, deal 8 HP on enemy touch or explode after 3.0s in AoE = BASE_RADIUS)
+    for (int i = 0; i < MINI_BOMB_MAX; i++) {
+        MiniBomb* mb = &g_miniBombs[i];
+        if (!mb->active) continue;
+        mb->age += dt;
+
+        // Fuse sparks
+        if (GetRandomValue(0, 99) < 35) {
+            Color sc = (GetRandomValue(0, 1) == 0) ? ORANGE : GOLD;
+            SpawnParticle((Vector2){ mb->pos.x + 3.0f, mb->pos.y - MINI_BOMB_RAD - 2.0f },
+                          (Vector2){ (float)GetRandomValue(-8, 8) * 0.1f, -1.2f },
+                          0.20f, 2.4f, sc, 0.04f, false);
+        }
+
+        // Check direct contact with any enemy ball
+        bool touched = false;
+        for (int j = 0; j < g_ballCount; j++) {
+            Ball* e = &g_balls[j];
+            if (!IsCombatBall(e) || e->team == mb->team) continue;
+            float hitR = (float)e->radius + MINI_BOMB_RAD;
+            if (V2DistSq(e->pos, mb->pos) <= hitR * hitR) {
+                TakeDamageScaled(e, MINI_BOMB_DMG, mb->dmgMult);
+                AddFx(mb->pos, MINI_BOMB_EXPLODE_R, ORANGE);
+                for (int k = 0; k < 10; k++) {
+                    float a = (float)GetRandomValue(0, 359) * DEG2RAD;
+                    float sp = 1.6f + (float)GetRandomValue(0, 26) * 0.1f;
+                    SpawnParticle(mb->pos, (Vector2){ cosf(a) * sp, sinf(a) * sp }, 0.28f, 3.2f,
+                                  (k % 2 == 0) ? ORANGE : DARKGRAY, 0.06f, false);
+                }
+                mb->active = false;
+                touched = true;
+                break;
+            }
+        }
+        if (touched) continue;
+
+        // Detonate after 3.0s in AoE radius = BASE_RADIUS (stacks if enemy stands in 2 or 3 bombs)
+        if (mb->age >= MINI_BOMB_LIFE) {
+            AddFx(mb->pos, MINI_BOMB_EXPLODE_R, ORANGE);
+            for (int k = 0; k < 12; k++) {
+                float a = (float)GetRandomValue(0, 359) * DEG2RAD;
+                float sp = 1.8f + (float)GetRandomValue(0, 28) * 0.1f;
+                SpawnParticle(mb->pos, (Vector2){ cosf(a) * sp, sinf(a) * sp }, 0.30f, 3.6f,
+                              (k % 3 == 0) ? GOLD : ((k % 3 == 1) ? ORANGE : DARKGRAY), 0.06f, false);
+            }
+            for (int j = 0; j < g_ballCount; j++) {
+                Ball* e = &g_balls[j];
+                if (!IsCombatBall(e) || e->team == mb->team) continue;
+                if (Overlaps(mb->pos, MINI_BOMB_EXPLODE_R, e)) {
+                    TakeDamageScaled(e, MINI_BOMB_DMG, mb->dmgMult);
+                }
+            }
+            mb->active = false;
+        }
+    }
+
+    // Cannonballs (straight line, unlimited range until wall; speed decays up to -15% with distance and -5% immediately on 1st hit)
+    for (int i = 0; i < CANNON_BALL_MAX; i++) {
+        CannonBall* cb = &g_cannonBalls[i];
+        if (!cb->active) continue;
+        float distRatio = ClampF(cb->travelled / CANNON_MAX_ACC_DIST, 0.0f, 1.0f);
+        float curSpd = CANNON_SPEED * (1.0f - CANNON_MAX_DIST_SLOW * distRatio) * cb->hitPenalty;
+        cb->vel = V2Mul(cb->dir, curSpd);
+        cb->pos = V2Add(cb->pos, cb->vel);
+        cb->travelled += curSpd;
+        if (GetRandomValue(0, 99) < 45) {
+            SpawnParticle(cb->pos, (Vector2){ -cb->vel.x * 0.08f, -cb->vel.y * 0.08f },
+                          0.22f, 3.8f, (Color){ 95, 95, 102, 200 }, 0.0f, false);
+        }
+        if (cb->pos.x < -CANNON_RAD - 4 || cb->pos.x > SCREEN_W + CANNON_RAD + 4 ||
+            cb->pos.y < -CANNON_RAD - 4 || cb->pos.y > SCREEN_H + CANNON_RAD + 4) {
+            cb->active = false;
+            continue;
+        }
+        for (int j = 0; j < g_ballCount; j++) {
+            Ball* e = &g_balls[j];
+            if (!IsAlive(e) || e->team == cb->team) continue;
+            if (!IsCombatBall(e) && e->type != TYPE_REFORGE_SUB) continue;
+            if (e->type != TYPE_REFORGE_SUB && (cb->hitMask & (1u << j))) continue;
+            float hitR = (float)e->radius + CANNON_RAD;
+            if (V2DistSq(e->pos, cb->pos) <= hitR * hitR) {
+                if (e->type == TYPE_REFORGE_SUB) {
+                    AddFx(cb->pos, 16.0f, LIGHTGRAY);
+                    cb->active = false;
+                    break;
+                }
+                cb->hitMask |= (1u << j);
+                int dmg = (cb->hitCount == 0) ? CANNON_FIRST_DMG : CANNON_PIERCE_DMG;
+                if (cb->hitCount == 0) {
+                    // Immediate -5% speed reduction on hitting the 1st target
+                    cb->hitPenalty = 1.0f - CANNON_FIRST_HIT_SLOW;
+                }
+                cb->hitCount++;
+                TakeDamageScaled(e, dmg, cb->dmgMult);
+                AddFx(cb->pos, 20.0f, (Color){ 80, 80, 86, 230 });
+                for (int k = 0; k < 7; k++) {
+                    float a = (float)GetRandomValue(0, 359) * DEG2RAD;
+                    float sp = 1.6f + (float)GetRandomValue(0, 24) * 0.1f;
+                    SpawnParticle(cb->pos, (Vector2){ cosf(a) * sp, sinf(a) * sp }, 0.24f, 3.2f,
+                                  (k % 2 == 0) ? ORANGE : DARKGRAY, 0.05f, false);
+                }
+            }
+        }
+    }
+
     for (int i = 0; i < FX_MAX; i++) {
         if (!g_fx[i].active) continue;
         if ((g_fx[i].age += dt) >= FX_TIME) g_fx[i].active = false;
@@ -4468,8 +5262,20 @@ static void UpdateEffects(float dt)
     }
 
     for (int i = 0; i < POPUP_MAX; i++) {
-        if (!g_popups[i].active) continue;
-        if ((g_popups[i].age += dt) >= POPUP_TIME) g_popups[i].active = false;
+        Popup* pop = &g_popups[i];
+        if (!pop->active) continue;
+        pop->age += dt;
+        if (!pop->fading) {
+            if (pop->age >= POPUP_HOLD_TIME) {
+                pop->fading = true;
+                pop->fadeAge = 0.0f;
+            }
+        } else {
+            pop->fadeAge += dt;
+            if (pop->fadeAge >= POPUP_FADE_TIME) {
+                pop->active = false;
+            }
+        }
     }
 }
 
@@ -4504,6 +5310,7 @@ static float GetEnemyHomingBias(const Ball* b)
         case TYPE_CAVALRY:
         case TYPE_EXECUTER:
         case TYPE_KING:
+        case TYPE_CAPTAIN:
             return WALL_HOMING_BIAS + b->homingBonus;
 
         // All other balls with 0 contact damage: 0% enemy homing bias
@@ -4555,15 +5362,20 @@ static void BounceWalls(Ball* b, const Ball* enemy)
         return;
     }
 
+    // White sparks on every ball-wall bounce
+    if (!IsFixed(b) && !b->touchingWall) {
+        SpawnWhiteCollisionSparks(webPos);
+    }
+
     // Cavalry crashing into a wall while in Charge state (state == 1):
-    // spawns a shower of sparks and immobilizes Cavalry for 1.25s before starting the 4.0s cooldown
+    // spawns a shower of sparks and immobilizes Cavalry for 0.75s before starting the 4.0s cooldown
     if (b->type == TYPE_CAVALRY && b->cavalry.state == 1 && !IsFixed(b)) {
         SpawnLanceSparks(webPos);
         b->cavalry.state = 2;
-        b->cavalry.timer = CAVALRY_STUN_T;
+        b->cavalry.timer = CAVALRY_STUN_WALL_T;
         b->cavalry.speedMult = 1.0f;
         b->slamLocked = true;
-        b->slamLockTimer = CAVALRY_STUN_T;
+        b->slamLockTimer = CAVALRY_STUN_WALL_T;
         b->slamLockPos = b->pos;
     }
 
@@ -4607,18 +5419,6 @@ static void BounceWalls(Ball* b, const Ball* enemy)
 
         const Ball* target = enemy;
         float bias = GetEnemyHomingBias(b);
-
-        if (b->type == TYPE_REFORGE && b->subIdx >= 0 && g_balls[b->subIdx].active) {
-            if (GetRandomValue(1, 100) <= 53) {
-                target = &g_balls[b->subIdx];
-                bias = REFORGE_HOMING_BIAS;
-            }
-        } else if (b->isSubBall && b->parentIdx >= 0 && IsCombatBall(&g_balls[b->parentIdx])) {
-            if (GetRandomValue(1, 100) <= 53) {
-                target = &g_balls[b->parentIdx];
-                bias = REFORGE_HOMING_BIAS;
-            }
-        }
 
         if (target && bias > 0.0001f) {
             Vector2 curDir   = Norm(b->normalVel);
@@ -4722,6 +5522,7 @@ static void ResolvePairCollision(int i, int j)
     {
         if (!f1) ReflectAway(b1,  nx,  ny);
         if (!f2) ReflectAway(b2, -nx, -ny);
+        SpawnWhiteCollisionSparks(V2Mul(V2Add(b1->pos, b2->pos), 0.5f));
 
         bool isReforgePair = (b1->type == TYPE_REFORGE && b1->subIdx == j) ||
                              (b2->type == TYPE_REFORGE && b2->subIdx == i);
@@ -4738,18 +5539,27 @@ static void ResolvePairCollision(int i, int j)
                 SpawnParticle(mid, (Vector2){ cosf(a) * sp, sinf(a) * sp }, 0.35f, 3.0f, GOLD, 0.08f, false);
             }
         } else if (b1->team != b2->team) {
-            ApplyContact(i, j);
-            if (IsAlive(b1) && IsAlive(b2)) ApplyContact(j, i);
-        }
-    } else if (b1->team != b2->team && !pairPulled) {
-        // If two balls remain in contact across frames (e.g. while slam-locked after Leap Slam),
-        // allow Shackless's Chain Lash to trigger once the 0.25s lashCooldown has elapsed
-        if (b1->type == TYPE_UNSHACKLED && b1->unshackled.passiveStacks > 0 && b1->unshackled.lashCooldown <= 0.0f) {
-            ApplyContact(i, j);
-        }
-        if (IsAlive(b1) && IsAlive(b2) && b2->type == TYPE_UNSHACKLED &&
-            b2->unshackled.passiveStacks > 0 && b2->unshackled.lashCooldown <= 0.0f) {
-            ApplyContact(j, i);
+            // Cavalry Charge vs Reforge Sub-ball: stun both for 1.0s (sub-ball has no HP)
+            if ((b1->type == TYPE_CAVALRY && b1->cavalry.state == 1 && b2->type == TYPE_REFORGE_SUB) ||
+                (b2->type == TYPE_CAVALRY && b2->cavalry.state == 1 && b1->type == TYPE_REFORGE_SUB)) {
+                Ball* cav = (b1->type == TYPE_CAVALRY) ? b1 : b2;
+                Ball* sub = (b1->type == TYPE_REFORGE_SUB) ? b1 : b2;
+                cav->cavalry.aimAngle = atan2f(sub->pos.y - cav->pos.y, sub->pos.x - cav->pos.x);
+                cav->cavalry.thrustTimer = 0.24f;
+                SpawnLanceSparks(V2Mul(V2Add(cav->pos, sub->pos), 0.5f));
+                cav->cavalry.state = 2;
+                cav->cavalry.timer = CAVALRY_STUN_BALL_T;
+                cav->cavalry.speedMult = 1.0f;
+                cav->slamLocked = true;
+                cav->slamLockTimer = CAVALRY_STUN_BALL_T;
+                cav->slamLockPos = cav->pos;
+                sub->slamLocked = true;
+                sub->slamLockTimer = CAVALRY_STUN_BALL_T;
+                sub->slamLockPos = sub->pos;
+            } else {
+                ApplyContact(i, j);
+                if (IsAlive(b1) && IsAlive(b2)) ApplyContact(j, i);
+            }
         }
     }
     g_wasColliding[i][j] = g_wasColliding[j][i] = true;
@@ -4797,6 +5607,8 @@ static void DrawDevilFangs(const Ball* b, const Ball* enemy)
 {
     Vector2 d = enemy ? Norm(V2Sub(enemy->pos, b->pos)) : (Vector2){ 1.0f, 0.0f };
     Vector2 n = { -d.y, d.x };
+    float t = (float)GetTime();
+    Color freshBlood = { 225, 18, 28, 255 };
 
     for (int s = -1; s <= 1; s += 2)
     {
@@ -4805,9 +5617,38 @@ static void DrawDevilFangs(const Ball* b, const Ball* enemy)
         Vector2 a2  = V2Add(c, V2Mul(n, 5.0f));
         Vector2 tip = V2Add(c, V2Mul(d, 16.0f));
         DrawTri(a1, a2, tip, WHITE);
+
+        // Small bright red blood stain on the very tip of each fang
+        Vector2 b1 = V2Add(tip, V2Mul(V2Sub(a1, tip), 0.27f));
+        Vector2 b2 = V2Add(tip, V2Mul(V2Sub(a2, tip), 0.22f));
+        DrawTri(b1, b2, tip, freshBlood);
+
         DrawLineEx(a1, tip, 1.5f, BLACK);
         DrawLineEx(a2, tip, 1.5f, BLACK);
         DrawLineEx(a1, a2,  1.5f, BLACK);
+
+        // Tiny glossy blood bead at the fang tip
+        DrawCircleV(tip, 1.25f, freshBlood);
+
+        // Sparse, gentle blood drip falling softly downward (staggered between the two fangs)
+        float phase = (s < 0) ? 0.0f : 1.45f;
+        float cyc = fmodf(t + phase, 2.9f);
+        if (cyc < 0.45f) {
+            float swell = cyc / 0.45f;
+            Vector2 bead = { tip.x, tip.y + 1.4f * swell };
+            DrawCircleV(bead, 0.75f + 0.85f * swell, Fade(freshBlood, 0.92f));
+        } else if (cyc < 1.40f) {
+            float p = (cyc - 0.45f) / 0.95f;
+            float fallY = 1.4f + 12.5f * p * p;
+            float dropR = 1.55f * (1.0f - 0.35f * p);
+            float alpha = (p < 0.65f) ? 0.90f : 0.90f * (1.0f - (p - 0.65f) / 0.35f);
+            Vector2 dropPos = { tip.x, tip.y + fallY };
+            Color dc = Fade(freshBlood, alpha);
+            DrawCircleV(dropPos, dropR, dc);
+            DrawTri((Vector2){ dropPos.x - dropR * 0.85f, dropPos.y },
+                    (Vector2){ dropPos.x + dropR * 0.85f, dropPos.y },
+                    (Vector2){ dropPos.x, dropPos.y - dropR * 2.1f }, dc);
+        }
     }
 }
 
@@ -4867,28 +5708,177 @@ static void DrawBlackArrow(Vector2 pos, float angle, float len, float scale)
     Vector2 d = { cosf(angle), sinf(angle) };
     Vector2 n = { -d.y, d.x };
     float L = len * scale;
-    Vector2 tail     = V2Add(pos, V2Mul(d, -L * 0.5f));
-    Vector2 headBase = V2Add(pos, V2Mul(d,  L * 0.15f));
-    Vector2 tip      = V2Add(pos, V2Mul(d,  L * 0.55f));
 
-    DrawLineEx(tail, headBase, 3.5f * scale, BLACK);
-    DrawTri(tip, V2Add(headBase, V2Mul(n, 6.5f * scale)), V2Add(headBase, V2Mul(n, -6.5f * scale)), BLACK);
-    DrawTri(headBase, V2Add(headBase, V2Add(V2Mul(d, -4.0f * scale), V2Mul(n,  7.5f * scale))),
-            V2Add(headBase, V2Mul(n, 2.0f * scale)), BLACK);
-    DrawTri(headBase, V2Add(headBase, V2Add(V2Mul(d, -4.0f * scale), V2Mul(n, -7.5f * scale))),
-            V2Add(headBase, V2Mul(n, -2.0f * scale)), BLACK);
+    // Metallic steel palette (dark gunmetal, mid silver, bright highlight, crisp black outline)
+    Color metalDark  = {  92, 100, 114, 255 };
+    Color metalMid   = { 172, 182, 196, 255 };
+    Color metalLight = { 238, 244, 252, 255 };
+
+    // Central rectangular metallic shaft running from handle (-0.50 L) to spearhead (+0.30 L)
+    float halfW = 1.85f * scale;
+    float outW  = halfW + 0.95f * scale;
+    Vector2 shaftStart = V2Add(pos, V2Mul(d, -L * 0.50f));
+    Vector2 shaftEnd   = V2Add(pos, V2Mul(d,  L * 0.30f));
+
+    // Black outline of shaft
+    Vector2 oBL = V2Add(shaftStart, V2Mul(n, -outW));
+    Vector2 oBR = V2Add(shaftStart, V2Mul(n,  outW));
+    Vector2 oTL = V2Add(shaftEnd,   V2Mul(n, -outW));
+    Vector2 oTR = V2Add(shaftEnd,   V2Mul(n,  outW));
+    DrawTri(oBL, oBR, oTR, BLACK);
+    DrawTri(oBL, oTR, oTL, BLACK);
+
+    // Right shaded half (metalDark) & left lit half (metalMid)
+    Vector2 sBL = V2Add(shaftStart, V2Mul(n, -halfW));
+    Vector2 sBM = shaftStart;
+    Vector2 sBR = V2Add(shaftStart, V2Mul(n,  halfW));
+    Vector2 sTL = V2Add(shaftEnd,   V2Mul(n, -halfW));
+    Vector2 sTM = shaftEnd;
+    Vector2 sTR = V2Add(shaftEnd,   V2Mul(n,  halfW));
+    DrawTri(sBL, sBM, sTM, metalDark);
+    DrawTri(sBL, sTM, sTL, metalDark);
+    DrawTri(sBM, sBR, sTR, metalMid);
+    DrawTri(sBM, sTR, sTM, metalMid);
+    // Thin white metallic sheen line along lit side of shaft
+    DrawLineEx(V2Add(shaftStart, V2Mul(n, halfW * 0.55f)),
+               V2Add(shaftEnd,   V2Mul(n, halfW * 0.55f)),
+               0.9f * scale, metalLight);
+
+    // 3 cleanly spaced pairs of triangular serrated barbs along the shaft (clearly separated)
+    static const float barbRear[3]  = { -0.24f, -0.07f,  0.10f };
+    static const float barbFront[3] = { -0.14f,  0.03f,  0.20f };
+    static const float barbOut[3]   = {  5.8f,   5.2f,   4.6f  };
+
+    for (int k = 0; k < 3; k++) {
+        Vector2 pRear  = V2Add(pos, V2Mul(d, L * barbRear[k]));
+        Vector2 pFront = V2Add(pos, V2Mul(d, L * barbFront[k]));
+        float w = barbOut[k] * scale;
+
+        // Lit (+n) triangular tooth
+        Vector2 lRoot1 = V2Add(pFront, V2Mul(n, halfW));
+        Vector2 lRoot2 = V2Add(pRear,  V2Mul(n, halfW));
+        Vector2 lTip   = V2Add(pRear,  V2Add(V2Mul(d, -L * 0.025f), V2Mul(n, w)));
+        DrawTri(lRoot1, lTip, lRoot2, metalMid);
+        DrawLineEx(lRoot1, lTip, 1.15f * scale, metalLight);
+        DrawLineEx(lRoot1, lTip, 0.95f * scale, BLACK);
+        DrawLineEx(lTip, lRoot2, 0.95f * scale, BLACK);
+
+        // Shaded (-n) triangular tooth
+        Vector2 rRoot1 = V2Add(pFront, V2Mul(n, -halfW));
+        Vector2 rRoot2 = V2Add(pRear,  V2Mul(n, -halfW));
+        Vector2 rTip   = V2Add(pRear,  V2Add(V2Mul(d, -L * 0.025f), V2Mul(n, -w)));
+        DrawTri(rRoot1, rRoot2, rTip, metalDark);
+        DrawLineEx(rRoot1, rTip, 0.95f * scale, BLACK);
+        DrawLineEx(rTip, rRoot2, 0.95f * scale, BLACK);
+    }
+
+    // Sharp metallic spearhead triangle at the front (+0.26 L to +0.50 L)
+    Vector2 headBase = V2Add(pos, V2Mul(d, L * 0.26f));
+    Vector2 headTip  = V2Add(pos, V2Mul(d, L * 0.50f));
+    float headW = 5.4f * scale;
+    Vector2 hL = V2Add(headBase, V2Mul(n,  headW));
+    Vector2 hR = V2Add(headBase, V2Mul(n, -headW));
+    DrawTri(headTip, hL, headBase, metalLight);
+    DrawTri(headTip, headBase, hR, metalDark);
+    DrawLineEx(headTip, hL, 1.1f * scale, BLACK);
+    DrawLineEx(headTip, hR, 1.1f * scale, BLACK);
+    DrawLineEx(hL, hR, 1.1f * scale, BLACK);
+    DrawLineEx(headTip, V2Add(headBase, V2Mul(n, headW * 0.35f)), 0.9f * scale, WHITE);
 }
 
-static void DrawHarpoonCenterEmblem(const Ball* b, const Ball* enemy)
+static void DrawHarpoonCenterEmblem(const Ball* b)
 {
     Vector2 c = b->pos;
-    DrawRing(c, 4.0f, 6.0f, 0.0f, 360.0f, 24, BLACK);
-    DrawRing(c, 8.5f, 10.5f, 0.0f, 360.0f, 24, BLACK);
-    DrawRing(c, 13.0f, 14.8f, 0.0f, 360.0f, 24, BLACK);
+    float r = (float)b->radius;
+
+    // Natural coiled nautical hemp rope (continuous organic spiral with braided twist marks)
+    Color ropeOutline = {  44,  30,  18, 255 };
+    Color ropeDark    = { 116,  80,  40, 255 };
+    Color ropeMain    = { 202, 162, 102, 255 };
+    Color ropeLight   = { 238, 212, 162, 255 };
+
+    const int spiralSteps = 72;
+    const float thetaStart = 0.35f;
+    const float thetaEnd   = 2.0f * PI * 2.55f + 2.25f; // ~2.9 turns ending at bottom-left
+    const float rStart     = 2.4f;
+    const float rEnd       = 15.6f;
+
+    Vector2 pts[73];
+    for (int i = 0; i <= spiralSteps; i++) {
+        float u = (float)i / (float)spiralSteps;
+        float th = thetaStart + (thetaEnd - thetaStart) * u;
+        float rad = rStart + (rEnd - rStart) * u + sinf(th * 3.0f) * 0.35f;
+        pts[i] = (Vector2){
+            c.x + cosf(th) * rad * 1.05f,
+            c.y + sinf(th) * rad * 0.94f
+        };
+    }
+
+    // Pass 1: Dark outline of coiled rope
+    for (int i = 0; i < spiralSteps; i++) {
+        DrawLineEx(pts[i], pts[i + 1], 5.4f, ropeOutline);
+    }
+    DrawCircleV(pts[0], 2.7f, ropeOutline);
+    DrawCircleV(pts[spiralSteps], 2.7f, ropeOutline);
+
+    // Pass 2: Warm hemp rope body & highlight
+    for (int i = 0; i < spiralSteps; i++) {
+        DrawLineEx(pts[i], pts[i + 1], 3.3f, ropeMain);
+        Vector2 seg = Norm(V2Sub(pts[i + 1], pts[i]));
+        Vector2 perp = { -seg.y, seg.x };
+        DrawLineEx(V2Add(pts[i], V2Mul(perp, 0.7f)),
+                   V2Add(pts[i + 1], V2Mul(perp, 0.7f)),
+                   1.1f, ropeLight);
+    }
+    // Tucked inner rope end
+    DrawCircleV(pts[0], 1.7f, ropeDark);
+
+    // Pass 3: Diagonal braided rope-strand notches along the coil
+    for (int i = 2; i < spiralSteps; i += 3) {
+        Vector2 seg = Norm(V2Sub(pts[i + 1], pts[i - 1]));
+        Vector2 perp = { -seg.y, seg.x };
+        Vector2 pA = V2Add(pts[i], V2Add(V2Mul(seg, -1.1f), V2Mul(perp, -1.6f)));
+        Vector2 pB = V2Add(pts[i], V2Add(V2Mul(seg,  1.1f), V2Mul(perp,  1.6f)));
+        DrawLineEx(pA, pB, 1.15f, ropeDark);
+    }
 
     if (b->harpoon.state == H_READY) {
-        float a = enemy ? atan2f(enemy->pos.y - c.y, enemy->pos.x - c.x) : 0.0f;
-        DrawBlackArrow(c, a, 28.0f, 1.0f);
+        // Harpoon length equals ball diameter (2*r), positioned on the left pointing straight upward
+        float hookLen = r * 2.0f;
+        Vector2 hookPos  = { c.x - r - 4.0f, c.y };
+        Vector2 hookTail = { hookPos.x, hookPos.y + hookLen * 0.50f };
+        Vector2 coilExit = pts[spiralSteps];
+
+        // Continuous braided rope flowing naturally from the outer coil end to the harpoon handle
+        const int ropeSegs = 8;
+        Vector2 rPts[9];
+        for (int s = 0; s <= ropeSegs; s++) {
+            float t = (float)s / (float)ropeSegs;
+            float sag = sinf(t * PI) * 7.0f;
+            rPts[s] = (Vector2){
+                coilExit.x + (hookTail.x - coilExit.x) * t,
+                coilExit.y + (hookTail.y - coilExit.y) * t + sag
+            };
+        }
+        for (int s = 0; s < ropeSegs; s++) {
+            DrawLineEx(rPts[s], rPts[s + 1], 4.6f, ropeOutline);
+        }
+        for (int s = 0; s < ropeSegs; s++) {
+            DrawLineEx(rPts[s], rPts[s + 1], 2.7f, ropeMain);
+            if (s % 2 == 1) {
+                Vector2 seg = Norm(V2Sub(rPts[s + 1], rPts[s]));
+                Vector2 perp = { -seg.y, seg.x };
+                Vector2 mid = V2Mul(V2Add(rPts[s], rPts[s + 1]), 0.5f);
+                DrawLineEx(V2Add(mid, V2Add(V2Mul(seg, -0.9f), V2Mul(perp, -1.3f))),
+                           V2Add(mid, V2Add(V2Mul(seg,  0.9f), V2Mul(perp,  1.3f))),
+                           1.0f, ropeDark);
+            }
+        }
+        // Small rope knot tied onto the harpoon handle
+        DrawCircleV(hookTail, 3.0f, ropeOutline);
+        DrawCircleV(hookTail, 1.9f, ropeMain);
+
+        DrawBlackArrow(hookPos, -PI * 0.5f, hookLen, 1.0f);
     }
 }
 
@@ -4964,12 +5954,16 @@ static void DrawWitchHat(const Ball* b)
 {
     float x = b->pos.x;
     float brimY = b->pos.y - b->radius + 4.0f;
+    float t = (float)GetTime();
+    float sway = sinf(t * 3.0f) * 3.2f;
+    float brimL = sinf(t * 3.0f + 0.6f) * 1.4f;
+    float brimR = sinf(t * 3.0f + 2.0f) * 1.4f;
     Color hatCol = { 35, 18, 52, 255 };
     Color bandCol = { 185, 50, 220, 255 };
 
     Vector2 cL = { x - 14.0f, brimY };
     Vector2 cR = { x + 14.0f, brimY };
-    Vector2 tip = { x + 6.0f, brimY - 25.0f };
+    Vector2 tip = { x + 6.0f + sway, brimY - 25.0f + fabsf(sway) * 0.25f };
     DrawTri(cL, cR, tip, hatCol);
     DrawLineEx(cL, tip, 1.5f, BLACK);
     DrawLineEx(cR, tip, 1.5f, BLACK);
@@ -4977,8 +5971,13 @@ static void DrawWitchHat(const Ball* b)
     DrawLineEx((Vector2){ x - 12.0f, brimY - 3.0f }, (Vector2){ x + 12.0f, brimY - 3.0f }, 4.0f, bandCol);
     DrawRectangleLines((int)x - 3, (int)brimY - 6, 6, 5, GOLD);
 
-    DrawLineEx((Vector2){ x - 24.0f, brimY }, (Vector2){ x + 24.0f, brimY }, 5.0f, hatCol);
-    DrawLineEx((Vector2){ x - 24.0f, brimY }, (Vector2){ x + 24.0f, brimY }, 1.5f, BLACK);
+    Vector2 bL = { x - 24.0f, brimY + brimL };
+    Vector2 bM = { x,         brimY };
+    Vector2 bR = { x + 24.0f, brimY + brimR };
+    DrawLineEx(bL, bM, 5.0f, hatCol);
+    DrawLineEx(bM, bR, 5.0f, hatCol);
+    DrawLineEx(bL, bM, 1.5f, BLACK);
+    DrawLineEx(bM, bR, 1.5f, BLACK);
 }
 
 static void DrawBowEmblem(const Ball* b)
@@ -5123,8 +6122,11 @@ static void DrawCellNucleus(const Ball* b)
 
 static void DrawLaserCore(const Ball* b)
 {
-    DrawCircleV(b->pos, 9.0f, WHITE);
-    DrawCircleV(b->pos, 5.0f, (Color){ 255, 220, 80, 255 });
+    float pulse = 0.5f + 0.5f * sinf((float)GetTime() * 4.2f);
+    // Rhythmic glowing energy aura & pulsing laser core brightness
+    DrawCircleV(b->pos, 14.0f + 4.5f * pulse, Fade((Color){ 255, 220, 90, 255 }, 0.14f + 0.34f * pulse));
+    DrawCircleV(b->pos, 9.5f + 1.5f * pulse, Fade(WHITE, 0.72f + 0.28f * pulse));
+    DrawCircleV(b->pos, 4.8f + 1.4f * pulse, (Color){ 255, (unsigned char)(195 + (int)(55 * pulse)), (unsigned char)(55 + (int)(110 * pulse)), 255 });
     DrawRing(b->pos, 11.0f, 13.0f, 0.0f, 360.0f, 24, BLACK);
 }
 
@@ -5178,6 +6180,115 @@ static void DrawSwirlVortex(Vector2 c, float r, float spinOffset)
     DrawCircleLines((int)c.x, (int)c.y, 3.5f, BLACK);
 }
 
+// Pixel-art white chess pieces (upper 3/4 bust attached on top of Chess ball; purely visual)
+static void DrawChessPieceSprite(ChessPiece piece, Vector2 baseCenter, float pxSize, float alpha)
+{
+    if (piece < CHESS_QUEEN || piece > CHESS_BISHOP || alpha <= 0.01f) return;
+
+    static const char* const queenMap[10] = {
+        "....###....",
+        "...#HH#....",
+        ".#########.",
+        "#HHMMMMMMS#",
+        "#HMMMMMMSS#",
+        ".##HMMMS##.",
+        "...#HMMS#..",
+        "...#HMMS#..",
+        "..#HHMMMS#.",
+        "..########."
+    };
+    static const char* const rookMap[10] = {
+        "###.###.###",
+        "#H###H###M#",
+        "#HM#HMM#MS#",
+        "#HHMMMMMMS#",
+        ".#HMMMMMS#.",
+        "..#HMMMS#..",
+        "..#HMMMS#..",
+        "..#HMMMS#..",
+        ".#HHMMMMS#.",
+        ".#########."
+    };
+    static const char* const knightMap[10] = {
+        "....###....",
+        "...#HM##...",
+        "..#HHMMS#..",
+        ".#HH#MMMS#.",
+        "#HHMMMMMS#.",
+        "#HM####MS#.",
+        ".###.#MMS#.",
+        "....#HMMS#.",
+        "...#HHMMS#.",
+        "..########."
+    };
+    static const char* const bishopMap[10] = {
+        "....###....",
+        "...#HM#....",
+        "..#HHMS#...",
+        ".#HH#MMS#..",
+        ".#H###MS#..",
+        ".#HM#MMS#..",
+        "..#HMMSS#..",
+        "...#HMMS#..",
+        "..#HHMMS#..",
+        "..#######.."
+    };
+
+    const char* const* grid = queenMap;
+    if (piece == CHESS_ROOK)        grid = rookMap;
+    else if (piece == CHESS_KNIGHT) grid = knightMap;
+    else if (piece == CHESS_BISHOP) grid = bishopMap;
+
+    // White pixel-chess palette (outline, shadow, silvery midtone, warm ivory highlight)
+    Color outCol  = Fade((Color){  32,  30,  42, 255 }, alpha);
+    Color shadCol = Fade((Color){ 112, 120, 140, 255 }, alpha);
+    Color midCol  = Fade((Color){ 168, 178, 196, 255 }, alpha);
+    Color hiCol   = Fade((Color){ 242, 244, 226, 255 }, alpha);
+
+    const int cols = 11;
+    const int rows = 10;
+    float ox = baseCenter.x - (cols * pxSize) * 0.5f;
+    float oy = baseCenter.y - (rows * pxSize);
+
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            char ch = grid[r][c];
+            if (ch == '.') continue;
+            Color col = outCol;
+            if (ch == 'S')      col = shadCol;
+            else if (ch == 'M') col = midCol;
+            else if (ch == 'H') col = hiCol;
+            DrawRectangleRec((Rectangle){ ox + c * pxSize, oy + r * pxSize, pxSize + 0.2f, pxSize + 0.2f }, col);
+        }
+    }
+}
+
+// Preview icon carousel: cycles through white chess pieces every 0.5s with a right-to-left swipe transition
+static void DrawChessPreviewCarousel(Vector2 center, float r)
+{
+    static const ChessPiece order[4] = { CHESS_QUEEN, CHESS_ROOK, CHESS_KNIGHT, CHESS_BISHOP };
+    const float stepDur = 0.5f;
+    float t = (float)GetTime();
+    int curIdx  = ((int)floorf(t / stepDur)) % 4;
+    int prevIdx = (curIdx + 3) % 4;
+    float local = fmodf(t, stepDur) / stepDur; // 0..1 within 0.5s
+    float baseY = center.y - r + 4.0f;
+
+    const float swipeFrac = 0.24f; // smooth right-to-left swipe during first ~0.12s
+    const float slideDist = 24.0f;
+
+    if (local < swipeFrac) {
+        float u = local / swipeFrac;
+        float ease = 1.0f - (1.0f - u) * (1.0f - u); // ease-out quad
+        // Previous piece slides out to the left
+        DrawChessPieceSprite(order[prevIdx], (Vector2){ center.x - slideDist * ease, baseY }, 2.0f, 1.0f - ease);
+        // Current piece slides in from the right
+        DrawChessPieceSprite(order[curIdx],  (Vector2){ center.x + slideDist * (1.0f - ease), baseY }, 2.0f, ease);
+    } else {
+        DrawChessPieceSprite(order[curIdx], (Vector2){ center.x, baseY }, 2.0f, 1.0f);
+    }
+}
+
 static void DrawChessBallPattern(const Ball* b)
 {
     float r = (float)b->radius;
@@ -5196,11 +6307,7 @@ static void DrawChessBallPattern(const Ball* b)
     }
 
     if (b->chess.active && b->chess.piece != CHESS_NONE) {
-        static const char* const sym[5] = { "", "Q", "R", "N", "B" };
-        const char* s = sym[b->chess.piece];
-        DrawCircleV(c, 10.0f, GOLD);
-        DrawCircleLines((int)c.x, (int)c.y, 10.0f, BLACK);
-        DrawText(s, (int)c.x - MeasureText(s, 16) / 2, (int)c.y - 8, 16, BLACK);
+        DrawChessPieceSprite(b->chess.piece, (Vector2){ c.x, c.y - r + 4.0f }, 2.0f, 1.0f);
     }
 }
 
@@ -5361,22 +6468,76 @@ static void DrawDice3DEmblem(const Ball* b)
     DrawCircleV((Vector2){ rightC.x + 2.8f, rightC.y + 2.8f }, 1.6f, WHITE);
 }
 
-// Gambler: pink ball with sly eyes, gold necklace, and gold ring
+// Gambler: pink ball with rhythmic blinking sly eyes, occasional wicked toothy grin, gold necklace, and puffing cigar
 static void DrawGamblerDetails(const Ball* b)
 {
     float x = b->pos.x, y = b->pos.y;
+    float t = (float)GetTime();
 
-    // Sly narrowed eyes with slanted eyebrows
-    DrawLineEx((Vector2){ x - 15, y - 10 }, (Vector2){ x - 4, y - 6 }, 3.0f, BLACK);
-    DrawLineEx((Vector2){ x + 15, y - 10 }, (Vector2){ x + 4, y - 6 }, 3.0f, BLACK);
-    DrawRectangle((int)x - 13, (int)y - 5, 9, 4, WHITE);
-    DrawRectangle((int)x + 4,  (int)y - 5, 9, 4, WHITE);
-    DrawCircle((int)x - 8, (int)y - 3, 2.0f, BLACK);
-    DrawCircle((int)x + 9, (int)y - 3, 2.0f, BLACK);
+    // 1. Rhythmic eye blink (every 3.0s, smoothly closes & opens over 0.36s)
+    float bCyc = fmodf(t, 3.0f);
+    float eyeOpen = 1.0f;
+    if (bCyc > 2.64f) {
+        float u = (bCyc - 2.64f) / 0.36f;
+        eyeOpen = 0.5f + 0.5f * cosf(u * 2.0f * PI);
+    }
 
-    // Smirking grin
-    DrawLineEx((Vector2){ x - 8, y + 4 }, (Vector2){ x + 4, y + 6 }, 2.2f, BLACK);
-    DrawLineEx((Vector2){ x + 4, y + 6 }, (Vector2){ x + 11, y + 2 }, 2.2f, BLACK);
+    // 2. Occasional sly & gleeful toothy grin (every 4.8s, grins from 2.6s -> 4.2s)
+    float gCyc = fmodf(t, 4.8f);
+    float grin = 0.0f;
+    if (gCyc >= 2.60f && gCyc < 2.85f) {
+        grin = (gCyc - 2.60f) / 0.25f;
+    } else if (gCyc >= 2.85f && gCyc < 3.95f) {
+        grin = 1.0f;
+    } else if (gCyc >= 3.95f && gCyc < 4.20f) {
+        grin = 1.0f - (gCyc - 3.95f) / 0.25f;
+    }
+
+    // Sly narrowed eyes with mischievous slanted eyebrows (tilt slightly more when grinning)
+    float browLift = grin * 1.4f;
+    DrawLineEx((Vector2){ x - 15.0f, y - 10.0f - browLift }, (Vector2){ x - 4.0f, y - 6.0f + browLift * 0.4f }, 3.0f, BLACK);
+    DrawLineEx((Vector2){ x + 15.0f, y - 10.0f - browLift }, (Vector2){ x + 4.0f, y - 6.0f + browLift * 0.4f }, 3.0f, BLACK);
+
+    if (eyeOpen > 0.16f) {
+        float eh = 4.6f * eyeOpen;
+        float ey = y - 3.0f - eh * 0.5f;
+        DrawRectangle((int)(x - 13.0f), (int)ey, 9, (int)fmaxf(1.0f, roundf(eh)), WHITE);
+        DrawRectangle((int)(x +  4.0f), (int)ey, 9, (int)fmaxf(1.0f, roundf(eh)), WHITE);
+        float pr = fminf(2.1f, eh * 0.48f);
+        DrawCircleV((Vector2){ x - 8.0f, y - 3.0f }, pr, BLACK);
+        DrawCircleV((Vector2){ x + 9.0f, y - 3.0f }, pr, BLACK);
+    } else {
+        // Closed sly eyelids
+        DrawLineEx((Vector2){ x - 13.5f, y - 3.0f }, (Vector2){ x - 4.0f, y - 2.5f }, 2.2f, BLACK);
+        DrawLineEx((Vector2){ x +  4.0f, y - 2.5f }, (Vector2){ x + 13.5f, y - 3.0f }, 2.2f, BLACK);
+    }
+
+    // Mouth: normal sly smirk transitioning into a wicked, gleeful toothy grin
+    Vector2 mL  = { x - 9.0f, y + 3.5f };
+    Vector2 mM  = { x + 3.0f, y + 5.8f };
+    Vector2 mR  = { x + 11.5f, y + 1.5f - grin * 1.2f };
+    if (grin > 0.08f) {
+        float openH = 5.4f * grin;
+        Vector2 mLow = { x + 2.5f, y + 5.8f + openH };
+        // Gleaming white teeth crescent
+        DrawTri(mL, mLow, mM, WHITE);
+        DrawTri(mM, mLow, mR, WHITE);
+        // Subtle tooth divider lines + one signature gold tooth glint
+        DrawLineEx((Vector2){ x - 2.5f, y + 4.8f }, (Vector2){ x - 2.5f, y + 4.8f + openH * 0.72f }, 1.2f, (Color){ 165, 165, 175, 255 });
+        DrawLineEx((Vector2){ x + 2.5f, y + 5.8f }, (Vector2){ x + 2.5f, y + 5.8f + openH * 0.90f }, 1.2f, (Color){ 165, 165, 175, 255 });
+        DrawLineEx((Vector2){ x + 7.0f, y + 4.0f }, (Vector2){ x + 7.0f, y + 4.0f + openH * 0.65f }, 1.2f, (Color){ 165, 165, 175, 255 });
+        if (grin > 0.55f) {
+            DrawRectangle((int)(x + 3.0f), (int)(y + 5.8f), 4, (int)(openH * 0.65f), GOLD);
+        }
+        // Crisp black grin outline
+        DrawLineEx(mL, mM, 2.0f, BLACK);
+        DrawLineEx(mM, mR, 2.0f, BLACK);
+        DrawLineEx(mL, mLow, 2.0f, BLACK);
+        DrawLineEx(mLow, mR, 2.0f, BLACK);
+    } else {
+        DrawLineEx(mL, mM, 2.2f, BLACK);
+        DrawLineEx(mM, mR, 2.2f, BLACK);
+    }
 
     // Gold necklace chain along lower chest
     for (int k = -4; k <= 4; k++) {
@@ -5389,14 +6550,95 @@ static void DrawGamblerDetails(const Ball* b)
     DrawCircleV((Vector2){ x, y + 19.0f }, 4.5f, GOLD);
     DrawCircleLines((int)x, (int)y + 19, 4.5f, BLACK);
 
-    // Gold ring with diamond on the side of the ball
-    Vector2 ringCenter = { x + b->radius - 3.0f, y - 2.0f };
-    DrawRing(ringCenter, 3.8f, 6.5f, 0.0f, 360.0f, 18, GOLD);
-    DrawCircleLines((int)ringCenter.x, (int)ringCenter.y, 6.5f, BLACK);
-    DrawCircleV((Vector2){ ringCenter.x + 5.5f, ringCenter.y }, 2.8f, SKYBLUE);
+    // 3. Cigar clamped at the corner of the mouth with rising wisps of smoke (replaces the old gold ring)
+    Vector2 cigMouth = { x + 9.5f,  y + 3.8f };
+    Vector2 cigTip   = { x + 28.5f, y + 8.5f };
+    Vector2 cigDir   = Norm(V2Sub(cigTip, cigMouth));
+    Vector2 cigNorm  = { -cigDir.y, cigDir.x };
+
+    // Cigar tobacco body
+    DrawLineEx(cigMouth, cigTip, 6.4f, BLACK);
+    DrawLineEx(cigMouth, cigTip, 4.4f, (Color){ 108, 60, 26, 255 });
+    DrawLineEx(V2Add(cigMouth, V2Mul(cigNorm, -0.9f)), V2Add(cigTip, V2Mul(cigNorm, -0.9f)), 1.8f, (Color){ 146, 88, 44, 255 });
+
+    // Classic red & gold cigar band near mouth end
+    Vector2 bandA = V2Add(cigMouth, V2Mul(cigDir, 5.0f));
+    Vector2 bandB = V2Add(cigMouth, V2Mul(cigDir, 8.2f));
+    DrawLineEx(bandA, bandB, 4.6f, (Color){ 195, 28, 32, 255 });
+    DrawLineEx(V2Add(bandA, V2Mul(cigDir, 0.8f)), V2Add(bandB, V2Mul(cigDir, -0.8f)), 4.6f, GOLD);
+
+    // Grey ash tip + gently pulsing glowing ember
+    Vector2 ashStart = V2Sub(cigTip, V2Mul(cigDir, 3.2f));
+    DrawLineEx(ashStart, cigTip, 4.4f, (Color){ 152, 152, 160, 255 });
+    float emberPulse = 0.65f + 0.35f * sinf(t * 5.2f);
+    DrawCircleV(cigTip, 2.4f, (Color){ 255, (unsigned char)(70 + (int)(80 * emberPulse)), 18, 255 });
+    DrawCircleV(cigTip, 1.2f, Fade(YELLOW, 0.85f * emberPulse));
+
+    // Puffing wisps of cigar smoke curling lazily upward
+    for (int s = 0; s < 4; s++) {
+        float life = fmodf(t * 0.62f + (float)s * 0.25f, 1.0f);
+        float driftX = sinf(life * 5.2f + (float)s * 1.7f) * (3.5f + life * 4.5f) + life * 4.5f;
+        float driftY = -life * 26.0f;
+        float rad = 2.4f + life * 5.2f;
+        float alpha = sinf(life * PI) * 0.58f;
+        Vector2 sp = { cigTip.x + 1.5f + driftX, cigTip.y - 2.0f + driftY };
+        DrawCircleV(sp, rad, Fade((Color){ 215, 220, 228, 255 }, alpha));
+        DrawCircleV((Vector2){ sp.x + 1.5f, sp.y - 1.0f }, rad * 0.65f, Fade(WHITE, alpha * 0.75f));
+    }
 }
 
 // Psychic: pink mystic head-scarf with black folds (Tara style) and a scarred third eye
+// Two rectangular pink cloth tails placed close together, slightly overlapping, streaming in the same breeze
+static void DrawPsychicFlutteringTails(Vector2 c, float r)
+{
+    float t = (float)GetTime();
+    Color wrapPink  = { 225, 65, 145, 255 };
+    Color backPink  = { 196, 46, 122, 255 };
+    Color lightPink = { 246, 118, 182, 255 };
+    Color darkFold  = { 145, 25, 90, 255 };
+
+    // Draw back/lower tail first (idx = 1), then front/upper tail (idx = 0) overlapping slightly on top
+    for (int order = 0; order < 2; order++) {
+        int idx = 1 - order;
+        float fi = (float)idx;
+        float phase = t * 4.5f - fi * 0.55f;
+
+        Vector2 p[4];
+        const float halfW = 6.0f; // uniform width from root to tip -> rectangular cloth strip
+        // Positioned close together so the two rectangular ribbons overlap slightly
+        p[0] = (Vector2){ c.x + r * (0.48f - fi * 0.08f), c.y + r * (0.24f + fi * 0.16f) };
+        for (int k = 1; k < 4; k++) {
+            float fk = (float)k;
+            float waveY = sinf(phase - fk * 0.85f) * (2.6f * fk);
+            float waveX = cosf(phase * 0.85f - fk * 0.65f) * (1.2f * fk);
+            p[k] = (Vector2){
+                p[0].x + fk * (10.5f - fi * 0.4f) + waveX,
+                p[0].y + fk * (3.6f + fi * 1.1f) + waveY
+            };
+        }
+
+        Vector2 L[4], R[4];
+        for (int k = 0; k < 4; k++) {
+            Vector2 tang = (k < 3) ? Norm(V2Sub(p[k + 1], p[k])) : Norm(V2Sub(p[k], p[k - 1]));
+            Vector2 perp = { -tang.y, tang.x };
+            L[k] = V2Add(p[k], V2Mul(perp, -halfW));
+            R[k] = V2Add(p[k], V2Mul(perp,  halfW));
+        }
+
+        Color baseCol = (idx == 1) ? backPink : wrapPink;
+        for (int k = 0; k < 3; k++) {
+            Color segCol = (idx == 0 && k == 2) ? lightPink : baseCol;
+            DrawTri(L[k], R[k], R[k + 1], segCol);
+            DrawTri(L[k], R[k + 1], L[k + 1], segCol);
+            DrawLineEx(p[k], p[k + 1], 1.4f, darkFold);
+            DrawLineEx(L[k], L[k + 1], 1.8f, BLACK);
+            DrawLineEx(R[k], R[k + 1], 1.8f, BLACK);
+        }
+        // Flat squared rectangular tip edge
+        DrawLineEx(L[3], R[3], 1.8f, BLACK);
+    }
+}
+
 static void DrawPsychicDetails(const Ball* b)
 {
     float x = b->pos.x, y = b->pos.y;
@@ -5416,19 +6658,56 @@ static void DrawPsychicDetails(const Ball* b)
     // Vertical scar mark cutting across the eye
     DrawLineEx((Vector2){ x + 2.0f, y - 16.0f }, (Vector2){ x - 2.0f, y + 10.0f }, 2.5f, BLACK);
 
-    // Mystic eye peeking out from the scarf folds (black & white)
-    Vector2 eL = { x - 13.0f, y - 2.0f };
-    Vector2 eR = { x + 13.0f, y - 2.0f };
-    Vector2 eT = { x, y - 9.5f };
-    Vector2 eB = { x, y + 5.5f };
-    DrawTri(eL, eB, eT, WHITE);
-    DrawTri(eR, eT, eB, WHITE);
-    DrawLineEx(eL, eT, 2.2f, BLACK);
-    DrawLineEx(eT, eR, 2.2f, BLACK);
-    DrawLineEx(eL, eB, 2.2f, BLACK);
-    DrawLineEx(eB, eR, 2.2f, BLACK);
-    DrawCircleV((Vector2){ x, y - 2.0f }, 4.5f, BLACK);
-    DrawCircleV((Vector2){ x - 1.5f, y - 3.5f }, 1.6f, WHITE);
+    // Gentle rhythmic blink: softly squints first (1.0 -> 0.56), pauses briefly, then closes fully & reopens
+    float cyc = fmodf((float)GetTime(), 3.6f);
+    float open = 1.0f;
+    if (cyc >= 2.35f && cyc < 2.75f) {
+        // Phase 1: gentle squint (1.0 -> 0.56)
+        float u = (cyc - 2.35f) / 0.40f;
+        float s = 0.5f - 0.5f * cosf(u * PI);
+        open = 1.0f - 0.44f * s;
+    } else if (cyc >= 2.75f && cyc < 3.00f) {
+        // Phase 2: brief calm squint hold
+        open = 0.56f;
+    } else if (cyc >= 3.00f && cyc < 3.24f) {
+        // Phase 3: close fully from squint (0.56 -> 0.0)
+        float u = (cyc - 3.00f) / 0.24f;
+        float s = 0.5f - 0.5f * cosf(u * PI);
+        open = 0.56f * (1.0f - s);
+    } else if (cyc >= 3.24f) {
+        // Phase 4: reopen smoothly (0.0 -> 1.0)
+        float u = (cyc - 3.24f) / 0.36f;
+        open = 0.5f - 0.5f * cosf(u * PI);
+    }
+
+    float eyeMidY = y - 2.0f;
+    Vector2 eL = { x - 13.0f, eyeMidY };
+    Vector2 eR = { x + 13.0f, eyeMidY };
+    Vector2 eT = { x, eyeMidY - 7.5f * open };
+    Vector2 eB = { x, eyeMidY + 7.5f * open };
+
+    if (open > 0.12f) {
+        DrawTri(eL, eB, eT, WHITE);
+        DrawTri(eR, eT, eB, WHITE);
+
+        // Pupil softly compressed vertically as the eyelids gently close
+        float pupilRx = 4.5f;
+        float pupilRy = fminf(4.5f, 6.2f * open);
+        DrawEllipse((int)x, (int)eyeMidY, pupilRx, pupilRy, BLACK);
+        if (open > 0.42f) {
+            DrawCircleV((Vector2){ x - 1.5f, eyeMidY - 1.5f * open }, 1.6f * open, WHITE);
+        }
+
+        DrawLineEx(eL, eT, 2.2f, BLACK);
+        DrawLineEx(eT, eR, 2.2f, BLACK);
+        DrawLineEx(eL, eB, 2.0f, BLACK);
+        DrawLineEx(eB, eR, 2.0f, BLACK);
+    } else {
+        // Softly closed eyelid curve
+        Vector2 eMid = { x, eyeMidY + 1.2f };
+        DrawLineEx(eL, eMid, 2.4f, BLACK);
+        DrawLineEx(eMid, eR, 2.4f, BLACK);
+    }
 }
 
 // Charge: multi-shade blue energy rings + lightning/power core
@@ -5504,19 +6783,28 @@ static void DrawUnshackledDetails(const Ball* b)
         }
     }
 
-    // Whipping golden chain lash animation when Shackless collides and consumes a stack
+    // Sylas-style circular Chain Lash sweep at 1.25x ball radius with 3 grey afterimage trail arcs (25% of circle = 90 deg)
     if (b->unshackled.lashAnimTimer > 0.0f) {
         float p = 1.0f - ClampF(b->unshackled.lashAnimTimer / 0.25f, 0.0f, 1.0f);
-        float ang = b->unshackled.lashAngle;
-        Vector2 d = { cosf(ang), sinf(ang) };
-        Vector2 n = { -d.y, d.x };
-        float reach = (r + 26.0f) * sinf(p * PI);
-        for (int link = 1; link <= 6; link++) {
-            float frac = (float)link / 6.0f;
-            float whipWave = sinf(frac * PI * 2.0f + p * 8.0f) * 6.0f;
-            Vector2 lp = V2Add(c, V2Add(V2Mul(d, r * 0.6f + frac * reach), V2Mul(n, whipWave)));
-            DrawCircleV(lp, 4.2f, GOLD);
-            DrawCircleLines((int)lp.x, (int)lp.y, 4.2f, BLACK);
+        float lashR = r * UNSHACKLED_LASH_RAD_MULT;
+        float headDeg = b->unshackled.lashAngle * RAD2DEG + p * 360.0f;
+
+        // 3 grey afterimage trail arcs behind the sweeping chain spanning 25% of the circle (90 degrees)
+        for (int t = 2; t >= 0; t--) {
+            float segStart = headDeg - 90.0f + (float)t * 30.0f;
+            float segEnd   = headDeg - (float)(2 - t) * 8.0f;
+            float alpha    = (t == 2) ? 0.52f : ((t == 1) ? 0.34f : 0.18f);
+            float halfThk  = (t == 2) ? 3.0f  : ((t == 1) ? 2.4f  : 1.8f);
+            DrawRing(c, lashR - halfThk, lashR + halfThk, segStart, segEnd, 18, Fade(GRAY, alpha));
+        }
+
+        // Sweeping chain links along the leading arc of the 1.25x circle
+        for (int link = 0; link < 7; link++) {
+            float linkDeg = headDeg - (float)link * 6.0f;
+            float rad = linkDeg * DEG2RAD;
+            Vector2 lp = { c.x + cosf(rad) * lashR, c.y + sinf(rad) * lashR };
+            DrawCircleV(lp, (link == 0) ? 4.6f : 3.6f, (link == 0) ? GOLD : LIGHTGRAY);
+            DrawCircleLines((int)lp.x, (int)lp.y, (link == 0) ? 4.6f : 3.6f, BLACK);
         }
     }
 }
@@ -6152,8 +7440,9 @@ static void DrawCavalryDetails(const Ball* b)
 {
     Vector2 c = b->pos;
     float r = (float)b->radius;
-    Color horseBrown = { 92, 46, 20, 255 };
-    Color darkBrown  = { 54, 26, 10, 255 };
+    Color horseBrown = { 104, 52, 22, 255 };
+    Color muzzleCol  = { 76, 36, 15, 255 };
+    Color darkBrown  = { 44, 20, 8, 255 };
     Color ironLight  = { 215, 224, 236, 255 };
     Color ironMid    = { 162, 174, 192, 255 };
     Color darkIron   = { 88, 96, 112, 255 };
@@ -6169,67 +7458,99 @@ static void DrawCavalryDetails(const Ball* b)
     // Iron barding armor ring around outer rim
     DrawRing(c, r * 0.74f, r - 1.5f, 0.0f, 360.0f, 24, darkIron);
 
-    // 1. Warhorse neck & sleeker forward-leaning head with thin black outline
-    Vector2 nBL = { c.x - 7.5f, c.y + 15.0f };
-    Vector2 nBR = { c.x + 7.5f, c.y + 15.0f };
-    Vector2 nTop = { c.x + 3.5f, c.y - 5.5f };
-    DrawTri(nBL, nBR, nTop, horseBrown);
-    DrawLineEx(nBL, nTop, 1.4f, BLACK);
-    DrawLineEx(nBR, nTop, 1.4f, BLACK);
+    // 1. Warhorse silhouette in charging profile: muscular arched neck + horizontal forward-tilted head with blunt muzzle
+    // Dark flowing mane along the back crest of the neck
+    Vector2 maneB = { c.x - 9.0f, c.y + 13.0f };
+    Vector2 maneM = { c.x - 5.5f, c.y + 3.0f };
+    Vector2 maneT = { c.x + 1.5f, c.y - 5.0f };
+    DrawTri(maneB, (Vector2){ c.x - 13.0f, c.y + 9.0f }, maneM, darkBrown);
+    DrawTri(maneM, (Vector2){ c.x - 9.5f,  c.y + 0.5f }, maneT, darkBrown);
+    DrawTri((Vector2){ c.x - 3.5f, c.y + 0.0f }, (Vector2){ c.x - 5.5f, c.y - 4.5f }, maneT, darkBrown);
 
-    // Horse head angled more horizontally and tilted slightly forward toward the lance
-    Vector2 sTop  = { c.x + 2.0f, c.y - 5.8f };
-    Vector2 sNose = { c.x + 19.5f, c.y - 0.5f };
-    Vector2 sJaw  = { c.x + 5.5f, c.y + 5.2f };
-    DrawTri(sTop, sNose, sJaw, horseBrown);
-    DrawLineEx(sTop, sNose, 1.4f, BLACK);
-    DrawLineEx(sNose, sJaw, 1.4f, BLACK);
-    DrawLineEx(sJaw, sTop, 1.2f, darkBrown);
+    // Arched horse neck (quad made of 2 triangles)
+    Vector2 neckChestL = { c.x - 7.5f, c.y + 16.5f };
+    Vector2 neckChestR = { c.x + 5.5f, c.y + 15.5f };
+    Vector2 neckPoll   = { c.x + 2.8f, c.y - 4.5f };
+    Vector2 neckThroat = { c.x + 7.5f, c.y + 4.8f };
+    DrawTri(neckChestL, neckChestR, neckPoll, horseBrown);
+    DrawTri(neckChestR, neckThroat, neckPoll, horseBrown);
+    DrawLineEx(neckChestL, neckPoll, 1.5f, BLACK);
+    DrawLineEx(neckChestR, neckThroat, 1.5f, BLACK);
 
-    // Horse ear
-    Vector2 earL = { c.x + 1.5f, c.y - 5.5f };
-    Vector2 earR = { c.x + 5.5f, c.y - 4.8f };
-    Vector2 earT = { c.x + 3.2f, c.y - 11.2f };
-    DrawTri(earL, earR, earT, darkBrown);
-    DrawLineEx(earL, earT, 1.2f, BLACK);
-    DrawLineEx(earR, earT, 1.2f, BLACK);
-
-    // Overlapping segmented armor plates along the horse's neck
-    for (int p = 0; p < 4; p++) {
-        float py = c.y - 3.0f + p * 4.4f;
-        float px = c.x - 1.5f - p * 1.1f;
-        Vector2 pL = { px - 6.0f, py + 2.2f };
-        Vector2 pR = { px + 6.0f, py + 0.8f };
-        Vector2 pT = { px - 1.0f, py - 2.8f };
-        DrawTri(pL, pR, pT, (p & 1) ? ironMid : ironLight);
-        DrawLineEx(pL, pR, 1.4f, darkIron);
-        DrawLineEx(pL, pT, 1.2f, BLACK);
+    // Subtle curved neck barding straps (following the neck cleanly without breaking silhouette)
+    for (int p = 0; p < 3; p++) {
+        float t = 0.28f + p * 0.24f;
+        Vector2 sL = { neckPoll.x + (neckChestL.x - neckPoll.x) * t, neckPoll.y + (neckChestL.y - neckPoll.y) * t };
+        Vector2 sR = { neckThroat.x + (neckChestR.x - neckThroat.x) * t, neckThroat.y + (neckChestR.y - neckThroat.y) * t };
+        DrawLineEx(sL, sR, 3.2f, BLACK);
+        DrawLineEx(sL, sR, 1.8f, (p & 1) ? ironMid : ironLight);
     }
-    // Horse eye (no nose armor)
-    DrawCircleV((Vector2){ c.x + 8.0f, c.y - 1.6f }, 1.8f, WHITE);
-    DrawCircleV((Vector2){ c.x + 8.5f, c.y - 1.6f }, 1.0f, BLACK);
 
-    // 2. Knight helmet perched above/behind, larger for better proportion with horse head
-    Vector2 helmC = { c.x - 9.0f, c.y - 10.5f };
-    float helmR = 9.2f;
+    // Two pointed ears angled slightly forward (charging posture)
+    Vector2 bEarL = { c.x + 1.5f, c.y - 4.5f };
+    Vector2 bEarR = { c.x + 4.5f, c.y - 4.0f };
+    Vector2 bEarT = { c.x + 4.2f, c.y - 10.2f };
+    DrawTri(bEarL, bEarR, bEarT, darkBrown);
+    DrawLineEx(bEarL, bEarT, 1.2f, BLACK);
+    DrawLineEx(bEarR, bEarT, 1.2f, BLACK);
+
+    Vector2 fEarL = { c.x + 3.2f, c.y - 4.2f };
+    Vector2 fEarR = { c.x + 6.6f, c.y - 3.2f };
+    Vector2 fEarT = { c.x + 6.8f, c.y - 9.6f };
+    DrawTri(fEarL, fEarR, fEarT, horseBrown);
+    DrawLineEx(fEarL, fEarT, 1.3f, BLACK);
+    DrawLineEx(fEarR, fEarT, 1.3f, BLACK);
+
+    // Horse head: clearly horizontal and tilted forward/downward toward the lance, with rounded cheek & blunt horse muzzle
+    Vector2 hForehead  = { c.x + 2.8f,  c.y - 4.6f };
+    Vector2 hMuzzleTop = { c.x + 22.0f, c.y + 1.6f };
+    Vector2 hMuzzleBot = { c.x + 20.0f, c.y + 7.4f };
+    Vector2 hCheek     = { c.x + 6.8f,  c.y + 6.6f };
+    Vector2 hJawMid    = { c.x + 14.5f, c.y + 6.4f };
+
+    DrawTri(hForehead, hMuzzleTop, hCheek, horseBrown);
+    DrawTri(hMuzzleTop, hMuzzleBot, hCheek, horseBrown);
+    // Slightly darker muzzle tip + rounded cheek accent for clear horse anatomy
+    DrawTri((Vector2){ c.x + 16.2f, c.y - 0.2f }, hMuzzleTop, hMuzzleBot, muzzleCol);
+    DrawTri((Vector2){ c.x + 16.2f, c.y - 0.2f }, hMuzzleBot, hJawMid, muzzleCol);
+    DrawCircleV((Vector2){ c.x + 6.5f, c.y + 2.8f }, 4.2f, horseBrown);
+
+    // Crisp black outline around the entire horse head contour (no nose armor)
+    DrawLineEx(hForehead, hMuzzleTop, 1.5f, BLACK);
+    DrawLineEx(hMuzzleTop, hMuzzleBot, 1.6f, BLACK);
+    DrawLineEx(hMuzzleBot, hCheek, 1.5f, BLACK);
+
+    // Nostril, mouth crease, and leather bridle/rein
+    DrawCircleV((Vector2){ c.x + 19.2f, c.y + 3.4f }, 1.2f, BLACK);
+    DrawLineEx((Vector2){ c.x + 16.6f, c.y + 0.0f }, (Vector2){ c.x + 15.0f, c.y + 6.3f }, 1.6f, darkBrown);
+    DrawLineEx((Vector2){ c.x + 15.4f, c.y + 4.8f }, (Vector2){ c.x - 4.5f, c.y + 5.0f }, 1.3f, darkBrown);
+
+    // Determined horse eye
+    DrawCircleV((Vector2){ c.x + 9.8f, c.y - 0.2f }, 1.9f, WHITE);
+    DrawCircleV((Vector2){ c.x + 10.3f, c.y - 0.1f }, 1.0f, BLACK);
+    DrawLineEx((Vector2){ c.x + 8.0f, c.y - 2.0f }, (Vector2){ c.x + 11.6f, c.y - 1.3f }, 1.1f, darkBrown);
+
+    // 2. Knight helmet perched cleanly above/behind the horse, unobstructed
+    Vector2 helmC = { c.x - 10.5f, c.y - 11.5f };
+    float helmR = 8.6f;
     // Flowing red plume trailing backward from the top of the helmet (3 layered feather triangles)
     float plumeWave = sinf((float)GetTime() * 8.0f) * 1.8f;
     Vector2 plumeRoot = { helmC.x - 1.0f, helmC.y - helmR + 0.5f };
-    DrawTri(plumeRoot, (Vector2){ plumeRoot.x - 16.0f, plumeRoot.y - 5.0f + plumeWave },
-            (Vector2){ plumeRoot.x - 9.0f,  plumeRoot.y + 2.0f + plumeWave }, plumeDark);
-    DrawTri(plumeRoot, (Vector2){ plumeRoot.x - 19.0f, plumeRoot.y - 1.5f + plumeWave },
-            (Vector2){ plumeRoot.x - 11.0f, plumeRoot.y - 6.5f + plumeWave }, plumeRed);
-    DrawTri(plumeRoot, (Vector2){ plumeRoot.x - 12.0f, plumeRoot.y + 3.0f + plumeWave },
-            (Vector2){ plumeRoot.x - 18.0f, plumeRoot.y - 1.0f + plumeWave }, (Color){ 255, 75, 75, 255 });
-    DrawLineEx(plumeRoot, (Vector2){ plumeRoot.x - 18.0f, plumeRoot.y - 2.0f + plumeWave }, 1.3f, BLACK);
+    DrawTri(plumeRoot, (Vector2){ plumeRoot.x - 15.5f, plumeRoot.y - 5.0f + plumeWave },
+            (Vector2){ plumeRoot.x - 8.5f,  plumeRoot.y + 2.0f + plumeWave }, plumeDark);
+    DrawTri(plumeRoot, (Vector2){ plumeRoot.x - 18.5f, plumeRoot.y - 1.5f + plumeWave },
+            (Vector2){ plumeRoot.x - 10.5f, plumeRoot.y - 6.5f + plumeWave }, plumeRed);
+    DrawTri(plumeRoot, (Vector2){ plumeRoot.x - 11.5f, plumeRoot.y + 3.0f + plumeWave },
+            (Vector2){ plumeRoot.x - 17.5f, plumeRoot.y - 1.0f + plumeWave }, (Color){ 255, 75, 75, 255 });
+    DrawLineEx(plumeRoot, (Vector2){ plumeRoot.x - 17.5f, plumeRoot.y - 2.0f + plumeWave }, 1.3f, BLACK);
 
     // Shining steel knight helmet with pointed visor
     DrawCircleV(helmC, helmR, ironMid);
     DrawCircleSector(helmC, helmR, -110.0f, 70.0f, 12, ironLight);
-    DrawTri((Vector2){ helmC.x + 2.5f, helmC.y - 6.0f },
-            (Vector2){ helmC.x + 12.2f, helmC.y - 0.5f },
-            (Vector2){ helmC.x + 2.5f, helmC.y + 5.5f }, ironLight);
-    DrawLineEx((Vector2){ helmC.x + 2.5f, helmC.y - 1.8f }, (Vector2){ helmC.x + 10.0f, helmC.y - 0.5f }, 2.2f, BLACK); // visor slit
+    DrawTri((Vector2){ helmC.x + 2.2f, helmC.y - 5.6f },
+            (Vector2){ helmC.x + 11.2f, helmC.y - 0.5f },
+            (Vector2){ helmC.x + 2.2f, helmC.y + 5.2f }, ironLight);
+    DrawLineEx((Vector2){ helmC.x + 2.2f, helmC.y - 1.6f }, (Vector2){ helmC.x + 9.2f, helmC.y - 0.5f }, 2.1f, BLACK); // visor slit
     DrawCircleLines((int)helmC.x, (int)helmC.y, helmR, BLACK);
 
     // 3. Conical jousting lance built from stacked triangles:
@@ -6241,8 +7562,8 @@ static void DrawCavalryDetails(const Ball* b)
     float thrustExtra = (b->cavalry.thrustTimer > 0.0f) ? (sinf((b->cavalry.thrustTimer / 0.24f) * PI) * 14.0f) : 0.0f;
 
     Vector2 lanceOrigin = V2Add(c, V2Add(V2Mul(d, -6.0f + thrustExtra), V2Mul(n, 9.5f)));
-    Vector2 handleRear  = V2Add(lanceOrigin, V2Mul(d, -11.0f));
     Vector2 baseCenter  = V2Add(lanceOrigin, V2Mul(d, r - 2.0f));
+    Vector2 handleRear  = V2Add(baseCenter, V2Mul(d, -(r + 9.0f) / 3.0f));
 
     // Cylindrical handle & rounded circularvamplate base attached to the handle
     DrawLineEx(handleRear, baseCenter, 6.0f, BLACK);
@@ -6304,9 +7625,10 @@ static void DrawExecuterDetails(const Ball* b)
     }
 
     // Heavy long-handled executioner axe:
+    // - Idle: gentle heavy sway
     // - During 3.0s Sion-Q charge (skillState == 1): slowly raises overhead with trembling weight
     // - During chopAnimTimer > 0: heavy wind-up lift then forceful downward slam
-    float axeAng = -0.65f;
+    float axeAng = -0.65f + sinf((float)GetTime() * 2.6f) * 0.09f;
     if (b->executer.skillState == 1) {
         float chargeP = ClampF(b->executer.skillTimer / EXECUTER_CHARGE_T, 0.0f, 1.0f);
         float tremble = sinf((float)GetTime() * 38.0f) * 0.05f * chargeP;
@@ -6326,14 +7648,16 @@ static void DrawExecuterDetails(const Ball* b)
 
     Vector2 d = { cosf(axeAng), sinf(axeAng) };
     Vector2 n = { -d.y, d.x };
+    // Hold the axe lower and to the right so it does not cover Executer's iron mask
+    Vector2 axePivot = { c.x + 13.0f, c.y + 10.0f };
     // Extra-long handle ("phần cán dài hơn bình thường")
-    Vector2 handleBase = V2Add(c, V2Mul(d, -10.0f));
-    Vector2 handleTip  = V2Add(c, V2Mul(d, r + 24.0f));
+    Vector2 handleBase = V2Add(axePivot, V2Mul(d, -10.0f));
+    Vector2 handleTip  = V2Add(axePivot, V2Mul(d, r + 22.0f));
     DrawLineEx(handleBase, handleTip, 6.0f, BLACK);
     DrawLineEx(handleBase, handleTip, 4.0f, woodShaft);
 
     // Massive crescent executioner axe blade near the end of the long shaft
-    Vector2 headRoot = V2Add(c, V2Mul(d, r + 15.0f));
+    Vector2 headRoot = V2Add(axePivot, V2Mul(d, r + 13.0f));
     Vector2 bladeTop = V2Add(headRoot, V2Add(V2Mul(d,  9.0f), V2Mul(n, 16.0f)));
     Vector2 bladeMid = V2Add(headRoot, V2Mul(n, 19.0f));
     Vector2 bladeBot = V2Add(headRoot, V2Add(V2Mul(d, -9.0f), V2Mul(n, 15.0f)));
@@ -6641,12 +7965,15 @@ static void DrawArcherDetails(const Ball* b)
         Vector2 aTip  = V2Add(c, V2Mul(d, 19.0f));
         DrawLineEx(aTail, aTip, 4.5f, BLACK);
         DrawLineEx(aTail, aTip, 2.8f, silverWhite);
-        // Burning flame on the arrowhead
-        DrawCircleV(aTip, 6.2f, Fade((Color){ 255, 85, 10, 255 }, 0.78f));
-        DrawTri(V2Add(aTip, V2Mul(d, 7.5f)),
-                V2Add(aTip, V2Mul(n, 4.8f)),
-                V2Add(aTip, V2Mul(n, -4.8f)), (Color){ 255, 165, 25, 255 });
-        DrawCircleV(aTip, 3.0f, YELLOW);
+        // Gently flickering flame on the arrowhead
+        float ft = (float)GetTime();
+        float fScale = 0.88f + 0.18f * sinf(ft * 11.0f) + 0.08f * sinf(ft * 19.3f);
+        float fSway  = sinf(ft * 9.5f) * 1.4f;
+        DrawCircleV(aTip, 6.0f * fScale, Fade((Color){ 255, 85, 10, 255 }, 0.72f + 0.16f * sinf(ft * 11.0f)));
+        DrawTri(V2Add(aTip, V2Add(V2Mul(d, 7.6f * fScale), V2Mul(n, fSway))),
+                V2Add(aTip, V2Mul(n, 4.6f * fScale)),
+                V2Add(aTip, V2Mul(n, -4.6f * fScale)), (Color){ 255, 165, 25, 255 });
+        DrawCircleV(V2Add(aTip, V2Mul(n, fSway * 0.3f)), 2.9f * fScale, YELLOW);
     }
 }
 
@@ -6679,10 +8006,11 @@ static void DrawSquireDetails(const Ball* b)
     DrawRectangleLines((int)(c.x - 3.5f), (int)(c.y - 14.0f), 7, 28, Fade(BLACK, 0.45f));
     DrawRectangleLines((int)(c.x - 13.0f), (int)(c.y - 3.5f), 26, 7, Fade(BLACK, 0.45f));
 
-    // Medieval squire short-sword held on the right side ("cầm thêm thanh kiếm kiểu medieval")
-    float swordAng = (V2DistSq(b->vel, (Vector2){ 0, 0 }) > 0.01f)
+    // Medieval squire short-sword held on the right side with a gentle idle sway
+    float swordSway = sinf((float)GetTime() * 3.0f) * 0.10f;
+    float swordAng = ((V2DistSq(b->vel, (Vector2){ 0, 0 }) > 0.01f)
                    ? (atan2f(b->vel.y, b->vel.x) - 0.35f)
-                   : -0.55f;
+                   : -0.55f) + swordSway;
     Vector2 sd = { cosf(swordAng), sinf(swordAng) };
     Vector2 sn = { -sd.y, sd.x };
     Vector2 guardPos  = { c.x + r - 2.0f, c.y + 3.0f };
@@ -6718,6 +8046,510 @@ static void DrawSquireDetails(const Ball* b)
     Vector2 gR = V2Add(guardPos, V2Mul(sn,  8.5f));
     DrawLineEx(gL, gR, 5.0f, BLACK);
     DrawLineEx(gL, gR, 3.2f, rimGray);
+}
+
+// Flintlock (Common - Pirate V1): wooden brown stock, multi-shade grey steel barrel, gold trim & flintlock mechanism
+static void DrawFlintlockDetails(const Ball* b)
+{
+    Vector2 c = b->pos;
+    float r = (float)b->radius;
+    float a = b->flintlock.aimAngle;
+    Vector2 d = { cosf(a), sinf(a) };
+    Vector2 n = { -d.y, d.x };
+
+    Color woodLight = { 166, 108, 60, 255 };
+    Color woodMid   = { 126, 76, 38, 255 };
+    Color woodDark  = { 86, 48, 22, 255 };
+    Color metalDark = { 82, 88, 96, 255 };
+    Color metalMid  = { 138, 146, 156, 255 };
+    Color metalHi   = { 205, 212, 222, 255 };
+    Color brass     = { 232, 186, 46, 255 };
+    Color brassDark = { 172, 126, 22, 255 };
+
+    // Subtle wooden-grain & metallic ring inside ball
+    DrawCircleSector(c, r - 2.0f, 135.0f, 315.0f, 18, woodDark);
+    DrawCircleSector(c, r - 2.0f, -45.0f, 135.0f, 18, woodMid);
+    DrawRing(c, r - 5.0f, r - 2.2f, 0.0f, 360.0f, 28, brassDark);
+
+    // Flintlock pistol oriented along aimAngle
+    Vector2 gripEnd  = V2Add(c, V2Add(V2Mul(d, -16.0f), V2Mul(n,  10.5f)));
+    Vector2 stockMid = V2Add(c, V2Add(V2Mul(d,  -5.0f), V2Mul(n,   2.5f)));
+    Vector2 foreEnd  = V2Add(c, V2Add(V2Mul(d,  14.0f), V2Mul(n,   1.0f)));
+    Vector2 brlBack  = V2Add(c, V2Add(V2Mul(d,  -6.5f), V2Mul(n,  -3.5f)));
+    Vector2 brlTip   = V2Add(c, V2Add(V2Mul(d,  23.0f), V2Mul(n,  -3.5f)));
+
+    // Curved wooden stock & grip
+    DrawLineEx(gripEnd, stockMid, 9.2f, BLACK);
+    DrawLineEx(gripEnd, stockMid, 6.6f, woodLight);
+    DrawLineEx(stockMid, foreEnd, 7.6f, BLACK);
+    DrawLineEx(stockMid, foreEnd, 5.2f, woodLight);
+
+    // Gold pommel cap & trigger guard
+    DrawCircleV(gripEnd, 4.4f, BLACK);
+    DrawCircleV(gripEnd, 3.1f, brass);
+    Vector2 trigPos = V2Add(c, V2Add(V2Mul(d, -1.5f), V2Mul(n, 7.0f)));
+    DrawRing(trigPos, 2.4f, 4.4f, 0.0f, 360.0f, 14, brass);
+
+    // Multi-shade grey iron barrel
+    DrawLineEx(brlBack, brlTip, 7.6f, BLACK);
+    DrawLineEx(brlBack, brlTip, 5.4f, metalDark);
+    DrawLineEx(V2Add(brlBack, V2Mul(n, -1.0f)), V2Add(brlTip, V2Mul(n, -1.0f)), 2.8f, metalMid);
+    DrawLineEx(V2Add(brlBack, V2Mul(n, -1.8f)), V2Add(brlTip, V2Mul(n, -1.8f)), 1.3f, metalHi);
+
+    // Gold barrel bands & flintlock hammer
+    Vector2 band1 = V2Add(c, V2Add(V2Mul(d, 7.0f), V2Mul(n, -1.5f)));
+    Vector2 band2 = V2Add(c, V2Add(V2Mul(d, 16.0f), V2Mul(n, -2.5f)));
+    DrawLineEx(V2Add(band1, V2Mul(n, -4.0f)), V2Add(band1, V2Mul(n, 4.0f)), 2.6f, brass);
+    DrawLineEx(V2Add(band2, V2Mul(n, -3.6f)), V2Add(band2, V2Mul(n, 3.6f)), 2.4f, brass);
+
+    Vector2 lockBase = V2Add(c, V2Add(V2Mul(d, -3.5f), V2Mul(n, -4.0f)));
+    Vector2 hammerTip = V2Add(lockBase, V2Add(V2Mul(d, -3.0f), V2Mul(n, -6.5f)));
+    DrawLineEx(lockBase, hammerTip, 3.6f, BLACK);
+    DrawLineEx(lockBase, hammerTip, 2.0f, brass);
+
+    // Muzzle flash when firing
+    if (b->flintlock.muzzleFlash > 0.0f) {
+        float t = b->flintlock.muzzleFlash / 0.14f;
+        Vector2 flashPos = V2Add(brlTip, V2Mul(d, 5.0f));
+        DrawCircleV(flashPos, 7.5f * t, Fade(ORANGE, 0.85f * t));
+        DrawCircleV(flashPos, 4.2f * t, Fade(YELLOW, 0.95f * t));
+    }
+}
+
+// Bomb (Uncommon - Pirate V1): 3 stacked round black/grey bombs with lit fuses
+static void DrawSingleMiniBombArt(Vector2 pos, float rad, float phase)
+{
+    Color bBlack   = { 24, 26, 30, 255 };
+    Color bDark    = { 54, 58, 66, 255 };
+    Color bMid     = { 98, 104, 114, 255 };
+    Color bLight   = { 172, 178, 190, 255 };
+
+    DrawCircleV(pos, rad + 1.2f, BLACK);
+    DrawCircleV(pos, rad, bBlack);
+    DrawCircleV((Vector2){ pos.x - rad * 0.18f, pos.y - rad * 0.18f }, rad * 0.72f, bDark);
+    DrawCircleV((Vector2){ pos.x - rad * 0.30f, pos.y - rad * 0.30f }, rad * 0.36f, bMid);
+    DrawCircleV((Vector2){ pos.x - rad * 0.36f, pos.y - rad * 0.36f }, rad * 0.16f, bLight);
+
+    // Metallic fuse cap
+    Vector2 capPos = { pos.x + rad * 0.25f, pos.y - rad * 0.90f };
+    DrawRectanglePro((Rectangle){ capPos.x, capPos.y, rad * 0.48f, rad * 0.34f },
+                     (Vector2){ rad * 0.24f, rad * 0.17f }, 22.0f, bMid);
+    // Fuse cord & spark
+    Vector2 fMid = { capPos.x + rad * 0.28f, capPos.y - rad * 0.38f };
+    Vector2 fTip = { fMid.x + rad * 0.24f, fMid.y - rad * 0.18f + sinf(phase) * 1.2f };
+    DrawLineEx(capPos, fMid, 2.0f, (Color){ 195, 165, 110, 255 });
+    DrawLineEx(fMid, fTip, 1.8f, (Color){ 195, 165, 110, 255 });
+    DrawCircleV(fTip, rad * 0.24f, ORANGE);
+    DrawCircleV(fTip, rad * 0.13f, YELLOW);
+}
+
+static void DrawBombDetails(const Ball* b)
+{
+    Vector2 c = b->pos;
+    float r = (float)b->radius;
+    float t = (float)GetTime() * 12.0f;
+
+    // Subtle dark smoky-grey layered interior
+    DrawCircleV(c, r - 2.0f, (Color){ 68, 72, 80, 255 });
+    DrawCircleV(c, r * 0.78f, (Color){ 96, 102, 112, 255 });
+
+    // 3 stacked bombs (2 on bottom, 1 on top)
+    float br = r * 0.34f;
+    DrawSingleMiniBombArt((Vector2){ c.x - br * 0.92f, c.y + br * 0.56f }, br, t);
+    DrawSingleMiniBombArt((Vector2){ c.x + br * 0.92f, c.y + br * 0.56f }, br, t + 1.7f);
+    DrawSingleMiniBombArt((Vector2){ c.x,              c.y - br * 0.62f }, br, t + 3.4f);
+}
+
+static void DrawFlyingBombArc(const BombData* bm)
+{
+    if (bm->airActive) {
+        float t = ClampF(bm->airTimer / BOMB_FLIGHT_T, 0.0f, 1.0f);
+        Vector2 groundPos = {
+            bm->airStart.x + (bm->airTarget.x - bm->airStart.x) * t,
+            bm->airStart.y + (bm->airTarget.y - bm->airStart.y) * t
+        };
+        float arcH = sinf(t * PI) * 125.0f + t * 36.0f; // arrives ~36px above ground for mid-air burst
+        Vector2 drawPos = { groundPos.x, groundPos.y - arcH };
+
+        // Target indicator on the ground
+        float pulse = 0.7f + 0.3f * sinf((float)GetTime() * 16.0f);
+        DrawRing(bm->airTarget, MINI_BOMB_TRI_DIST - 2.0f, MINI_BOMB_TRI_DIST, 0.0f, 360.0f, 28, Fade(ORANGE, 0.42f * pulse));
+        DrawCircleV(bm->airTarget, 5.0f, Fade(RED, 0.65f));
+        // Ground shadow beneath flying bomb
+        DrawCircleV(groundPos, 10.0f * (1.0f - 0.35f * sinf(t * PI)), Fade(BLACK, 0.28f));
+
+        // Airborne bomb scaled slightly larger at apex
+        float rad = 11.5f + sinf(t * PI) * 5.0f;
+        DrawSingleMiniBombArt(drawPos, rad, (float)GetTime() * 18.0f);
+    }
+
+    if (bm->dropActive) {
+        float dtFrac = ClampF(bm->dropTimer / BOMB_DROP_T, 0.0f, 1.0f);
+        float inv = 1.0f - dtFrac;
+        Vector2 burstPos = { bm->dropOrigin.x, bm->dropOrigin.y - 36.0f };
+
+        // Mid-air explosion puff & shockwave ring lasting 0.25s
+        DrawCircleV(burstPos, 14.0f + dtFrac * 26.0f, Fade(ORANGE, 0.55f * inv));
+        DrawCircleV(burstPos, 9.0f + dtFrac * 18.0f, Fade(YELLOW, 0.75f * inv));
+        DrawRing(burstPos, 12.0f + dtFrac * 30.0f, 16.0f + dtFrac * 34.0f, 0.0f, 360.0f, 28, Fade(DARKGRAY, 0.70f * inv));
+
+        // 3 mini-bombs falling from the mid-air explosion down onto the arena floor
+        for (int k = 0; k < 3; k++) {
+            Vector2 tgt = bm->dropTargets[k];
+            Vector2 groundLerp = {
+                bm->dropOrigin.x + (tgt.x - bm->dropOrigin.x) * dtFrac,
+                bm->dropOrigin.y + (tgt.y - bm->dropOrigin.y) * dtFrac
+            };
+            // Quadratic fall from height 36px -> 0px with a tiny upward pop at launch
+            float h = 36.0f * (1.0f - dtFrac * dtFrac) + sinf(dtFrac * PI) * 10.0f;
+            Vector2 pos = { groundLerp.x, groundLerp.y - h };
+
+            // Growing shadow on floor as mini-bomb lands
+            DrawCircleV(tgt, MINI_BOMB_RAD * (0.4f + 0.6f * dtFrac), Fade(BLACK, 0.26f * dtFrac));
+            DrawSingleMiniBombArt(pos, MINI_BOMB_RAD * (0.85f + 0.15f * dtFrac), (float)GetTime() * 20.0f + (float)k);
+        }
+    }
+}
+
+// Cannon (Rare - Pirate V1): light brown wood carriage + heavy black/multi-shade grey iron barrel
+static void DrawCannonDetails(const Ball* b)
+{
+    Vector2 c = b->pos;
+    float r = (float)b->radius;
+    float a = b->cannon.aimAngle;
+    Vector2 d = { cosf(a), sinf(a) };
+    Vector2 n = { -d.y, d.x };
+
+    Color woodLight = { 202, 152, 92, 255 };
+    Color woodMid   = { 164, 114, 58, 255 };
+    Color woodDark  = { 112, 74, 34, 255 };
+    Color ironBlack = { 28, 30, 35, 255 };
+    Color ironDark  = { 68, 72, 80, 255 };
+    Color ironMid   = { 118, 124, 134, 255 };
+    Color ironHi    = { 182, 188, 198, 255 };
+
+    // Light-brown wooden deck interior
+    DrawCircleSector(c, r - 2.0f, 135.0f, 315.0f, 18, woodMid);
+    DrawCircleSector(c, r - 2.0f, -45.0f, 135.0f, 18, woodLight);
+
+    // Recoil offset along -d
+    float recoil = (b->cannon.recoilTimer > 0.0f) ? (b->cannon.recoilTimer / 0.28f) * 5.5f : 0.0f;
+    Vector2 base = V2Sub(c, V2Mul(d, recoil));
+
+    // Wooden naval carriage side cheeks & wheels
+    Vector2 carrBack = V2Add(base, V2Mul(d, -11.0f));
+    Vector2 carrFront = V2Add(base, V2Mul(d, 7.0f));
+    DrawLineEx(V2Add(carrBack, V2Mul(n, 8.5f)), V2Add(carrFront, V2Mul(n, 7.0f)), 6.2f, BLACK);
+    DrawLineEx(V2Add(carrBack, V2Mul(n, 8.5f)), V2Add(carrFront, V2Mul(n, 7.0f)), 4.0f, woodDark);
+    DrawLineEx(V2Add(carrBack, V2Mul(n, -8.5f)), V2Add(carrFront, V2Mul(n, -7.0f)), 6.2f, BLACK);
+    DrawLineEx(V2Add(carrBack, V2Mul(n, -8.5f)), V2Add(carrFront, V2Mul(n, -7.0f)), 4.0f, woodDark);
+
+    // 4 small iron-rimmed wooden wheels
+    Vector2 wPts[4] = {
+        V2Add(base, V2Add(V2Mul(d, -7.0f), V2Mul(n,  12.0f))),
+        V2Add(base, V2Add(V2Mul(d,  5.0f), V2Mul(n,  10.5f))),
+        V2Add(base, V2Add(V2Mul(d, -7.0f), V2Mul(n, -12.0f))),
+        V2Add(base, V2Add(V2Mul(d,  5.0f), V2Mul(n, -10.5f)))
+    };
+    for (int w = 0; w < 4; w++) {
+        DrawCircleV(wPts[w], 4.2f, BLACK);
+        DrawCircleV(wPts[w], 2.8f, woodLight);
+        DrawCircleV(wPts[w], 1.2f, ironDark);
+    }
+
+    // Tapered heavy iron cannon barrel (wide breech -> slightly narrower muzzle)
+    Vector2 breech = V2Add(base, V2Mul(d, -14.0f));
+    Vector2 muzzle = V2Add(base, V2Mul(d,  21.0f));
+    float wB = 9.5f, wM = 6.2f;
+    Vector2 bL = V2Add(breech, V2Mul(n, -wB)), bR = V2Add(breech, V2Mul(n, wB));
+    Vector2 mL = V2Add(muzzle, V2Mul(n, -wM)), mR = V2Add(muzzle, V2Mul(n, wM));
+
+    // Black outline
+    DrawTri(V2Add(breech, V2Mul(n, -(wB + 1.5f))), V2Add(breech, V2Mul(n, wB + 1.5f)), V2Add(muzzle, V2Mul(n, wM + 1.5f)), BLACK);
+    DrawTri(V2Add(breech, V2Mul(n, -(wB + 1.5f))), V2Add(muzzle, V2Mul(n, wM + 1.5f)), V2Add(muzzle, V2Mul(n, -(wM + 1.5f))), BLACK);
+    // Iron body
+    DrawTri(bL, bR, mR, ironBlack);
+    DrawTri(bL, mR, mL, ironBlack);
+    // Multi-shade grey metallic specular highlight strips along the top of the barrel
+    DrawLineEx(V2Add(breech, V2Mul(n, -3.5f)), V2Add(muzzle, V2Mul(n, -2.2f)), 4.0f, ironDark);
+    DrawLineEx(V2Add(breech, V2Mul(n, -4.6f)), V2Add(muzzle, V2Mul(n, -3.0f)), 2.2f, ironMid);
+    DrawLineEx(V2Add(breech, V2Mul(n, -5.2f)), V2Add(muzzle, V2Mul(n, -3.4f)), 1.0f, ironHi);
+
+    // Cascabel knob at breech + reinforcement rings + muzzle lip
+    DrawCircleV(V2Sub(breech, V2Mul(d, 3.2f)), 4.2f, ironDark);
+    DrawCircleLines((int)(breech.x - d.x * 3.2f), (int)(breech.y - d.y * 3.2f), 4.2f, BLACK);
+    Vector2 r1 = V2Add(base, V2Mul(d, -4.0f));
+    Vector2 r2 = V2Add(base, V2Mul(d,  9.0f));
+    DrawLineEx(V2Add(r1, V2Mul(n, -8.8f)), V2Add(r1, V2Mul(n, 8.8f)), 2.8f, ironMid);
+    DrawLineEx(V2Add(r2, V2Mul(n, -7.6f)), V2Add(r2, V2Mul(n, 7.6f)), 2.4f, ironMid);
+    DrawLineEx(V2Add(muzzle, V2Mul(n, -7.2f)), V2Add(muzzle, V2Mul(n, 7.2f)), 3.2f, ironDark);
+}
+
+// Captain (Legendary - Pirate V1): fluttering black tricorn hat with gold trim, white skull & crossbones,
+// 3 fluttering red feathers, left-hand emerald/white pirate cutlass with gold hilt, and gun stance tracer
+static void DrawCaptainDetails(const Ball* b)
+{
+    Vector2 c = b->pos;
+    float r = (float)b->radius;
+    const CaptainData* cp = &b->captain;
+    float wave = cp->hatWavePhase;
+    if (wave == 0.0f) wave = (float)GetTime() * 7.5f;
+
+    Color coatNavy  = { 32, 36, 48, 255 };
+    Color coatRed   = { 156, 26, 34, 255 };
+    Color goldHi    = { 248, 206, 58, 255 };
+    Color goldDark  = { 176, 124, 22, 255 };
+    Color jadeBlade = { 34, 198, 152, 255 };
+    Color jadeLight = { 135, 244, 212, 255 };
+    Color feather1  = { 212, 28, 34, 255 };
+    Color feather2  = { 244, 62, 54, 255 };
+    Color hatBlack  = { 22, 24, 30, 255 };
+
+    // Pirate captain coat emblem inside ball (deep navy + crimson sash + gold buttons)
+    DrawCircleV(c, r - 2.0f, coatNavy);
+    DrawLineEx((Vector2){ c.x - r * 0.55f, c.y - r * 0.55f }, (Vector2){ c.x + r * 0.55f, c.y + r * 0.55f }, 7.0f, coatRed);
+    DrawCircleV((Vector2){ c.x - 6.0f, c.y + 4.0f }, 2.4f, goldHi);
+    DrawCircleV((Vector2){ c.x + 6.0f, c.y - 4.0f }, 2.4f, goldHi);
+    DrawRing(c, r - 4.5f, r - 2.0f, 0.0f, 360.0f, 32, goldDark);
+
+    // ===== LEFT HAND: PIRATE CUTLASS (long sleek emerald-jade & gleaming white blade + ornate gold basket guard) =====
+    {
+        float swingOff = (cp->slashTimer > 0.0f) ? (-1.2f + (1.0f - cp->slashTimer / 0.28f) * 2.4f) : 0.0f;
+        float swAng = (cp->stance == 1 || cp->slashTimer > 0.0f)
+                    ? (cp->aimAngle + swingOff)
+                    : (-PI * 0.62f + sinf(wave * 0.5f) * 0.06f);
+        Vector2 handPos = { c.x - r * 0.78f, c.y + r * 0.32f };
+        if (cp->stance == 1 || cp->slashTimer > 0.0f) {
+            handPos = V2Add(c, (Vector2){ cosf(swAng - 0.50f) * (r * 0.86f), sinf(swAng - 0.50f) * (r * 0.86f) });
+        }
+        Vector2 sd = { cosf(swAng), sinf(swAng) };
+        Vector2 sn = { -sd.y, sd.x };
+
+        // Hilt & long slender cutlass proportions (straight lower 60%, graceful curved upper 40% to sharp point)
+        Vector2 pommel  = V2Sub(handPos, V2Mul(sd, 10.5f));
+        Vector2 guard   = V2Add(handPos, V2Mul(sd,  3.5f));
+        Vector2 b1Edge  = V2Add(guard,   V2Add(V2Mul(sd, 26.0f), V2Mul(sn, -3.2f)));
+        Vector2 b1Spine = V2Add(guard,   V2Add(V2Mul(sd, 26.0f), V2Mul(sn,  2.4f)));
+        Vector2 b2Edge  = V2Add(guard,   V2Add(V2Mul(sd, 37.5f), V2Mul(sn, -4.6f)));
+        Vector2 b2Spine = V2Add(guard,   V2Add(V2Mul(sd, 36.5f), V2Mul(sn,  0.4f)));
+        Vector2 tip     = V2Add(guard,   V2Add(V2Mul(sd, 48.0f), V2Mul(sn, -6.5f)));
+
+        Vector2 gEdge   = V2Add(guard, V2Mul(sn, -3.0f));
+        Vector2 gSpine  = V2Add(guard, V2Mul(sn,  2.6f));
+
+        // Black silhouette outline behind the blade so the long emerald/white cutlass pops cleanly
+        DrawLineEx(gEdge,   b1Edge,  3.6f, BLACK);
+        DrawLineEx(b1Edge,  b2Edge,  3.4f, BLACK);
+        DrawLineEx(b2Edge,  tip,     3.0f, BLACK);
+        DrawLineEx(gSpine,  b1Spine, 3.2f, BLACK);
+        DrawLineEx(b1Spine, b2Spine, 3.0f, BLACK);
+        DrawLineEx(b2Spine, tip,     2.6f, BLACK);
+
+        // Emerald-jade lower & mid blade + light-jade curved upper blade
+        DrawTri(gEdge, gSpine, b1Spine, jadeBlade);
+        DrawTri(gEdge, b1Spine, b1Edge, jadeBlade);
+        DrawTri(b1Edge, b1Spine, b2Spine, jadeBlade);
+        DrawTri(b1Edge, b2Spine, b2Edge, jadeLight);
+        DrawTri(b2Edge, b2Spine, tip, jadeLight);
+
+        // Gleaming white razor cutting edge & metallic sheen highlight near the curved tip
+        DrawLineEx(gEdge,  b1Edge, 1.9f, WHITE);
+        DrawLineEx(b1Edge, b2Edge, 2.0f, WHITE);
+        DrawLineEx(b2Edge, tip,    1.9f, WHITE);
+        DrawLineEx(V2Add(guard, V2Mul(sd, 6.0f)), V2Add(guard, V2Add(V2Mul(sd, 25.0f), V2Mul(sn, -0.8f))), 1.3f, jadeLight);
+        DrawLineEx(V2Add(guard, V2Add(V2Mul(sd, 29.0f), V2Mul(sn, -1.6f))),
+                   V2Add(guard, V2Add(V2Mul(sd, 39.0f), V2Mul(sn, -4.0f))), 1.6f, WHITE);
+
+        // Ribbed dark-gold/navy leather grip & golden pommel cap
+        DrawLineEx(pommel, guard, 6.2f, BLACK);
+        DrawLineEx(pommel, guard, 3.8f, (Color){ 64, 52, 34, 255 });
+        for (int g = 0; g < 3; g++) {
+            Vector2 gp = V2Add(pommel, V2Mul(sd, 3.0f + (float)g * 3.4f));
+            DrawLineEx(V2Add(gp, V2Mul(sn, -2.2f)), V2Add(gp, V2Mul(sn, 2.2f)), 1.3f, goldDark);
+        }
+        DrawCircleV(pommel, 4.2f, BLACK);
+        DrawCircleV(pommel, 2.9f, goldHi);
+
+        // Ornate D-shaped golden pirate basket/knuckle-bow guard with curled back quillon
+        Vector2 bowQBack = V2Add(guard,   V2Add(V2Mul(sd,  1.5f), V2Mul(sn,  6.8f)));
+        Vector2 bowCurl  = V2Add(guard,   V2Add(V2Mul(sd,  5.0f), V2Mul(sn,  6.2f)));
+        Vector2 bowTop   = V2Add(guard,   V2Add(V2Mul(sd,  0.5f), V2Mul(sn, -7.8f)));
+        Vector2 bowMid1  = V2Add(handPos, V2Add(V2Mul(sd, -1.5f), V2Mul(sn, -11.2f)));
+        Vector2 bowMid2  = V2Add(handPos, V2Add(V2Mul(sd, -6.5f), V2Mul(sn, -10.0f)));
+
+        // Guard dark outline
+        DrawLineEx(bowCurl,  bowQBack, 4.8f, BLACK);
+        DrawLineEx(bowQBack, bowTop,   5.2f, BLACK);
+        DrawLineEx(bowTop,   bowMid1,  5.6f, BLACK);
+        DrawLineEx(bowMid1,  bowMid2,  5.4f, BLACK);
+        DrawLineEx(bowMid2,  pommel,   4.8f, BLACK);
+
+        // Guard gold & dark-gold body
+        DrawLineEx(bowCurl,  bowQBack, 2.8f, goldHi);
+        DrawLineEx(bowQBack, bowTop,   3.4f, goldHi);
+        DrawLineEx(bowTop,   bowMid1,  3.8f, goldDark);
+        DrawLineEx(bowMid1,  bowMid2,  3.6f, goldHi);
+        DrawLineEx(bowMid2,  pommel,   3.0f, goldDark);
+
+        // Subtle decorative dark-gold cutouts along the wide knuckle-bow
+        DrawCircleV(V2Add(handPos, V2Add(V2Mul(sd, -2.5f), V2Mul(sn, -9.2f))), 1.3f, (Color){ 60, 42, 16, 255 });
+        DrawCircleV(V2Add(handPos, V2Add(V2Mul(sd, -6.2f), V2Mul(sn, -8.2f))), 1.2f, (Color){ 60, 42, 16, 255 });
+    }
+
+    // ===== RIGHT HAND: CAPTAIN GOLDEN FLINTLOCK PISTOL (larger & shifted cleanly to the right) =====
+    if (cp->stance == 0 || cp->gunFlashTimer > 0.0f) {
+        float ga = cp->aimAngle;
+        Vector2 gd = { cosf(ga), sinf(ga) };
+        // Keep hammer/barrel on top and curved grip underneath even when aiming left
+        float flipY = (gd.x < 0.0f) ? -1.0f : 1.0f;
+        Vector2 gn = { -gd.y * flipY, gd.x * flipY }; // points "down" relative to pistol
+
+        // Shifted right/outward to the ball's outer edge so the wooden grip never overlaps the red coat sash
+        Vector2 gBase = V2Add(c, V2Add(V2Mul(gd, r * 0.96f), V2Mul(gn, 4.5f)));
+
+        Color woodDark  = { 86, 52, 24, 255 };
+        Color woodMid   = { 118, 72, 34, 255 };
+        Color silverHi  = { 196, 204, 214, 255 };
+        Color silverMid = { 136, 144, 156, 255 };
+
+        // Key pistol geometry (scaled to balance the long emerald cutlass)
+        Vector2 pommelPos = V2Add(gBase, V2Add(V2Mul(gd, -10.5f), V2Mul(gn, 11.5f)));
+        Vector2 gripMid   = V2Add(gBase, V2Add(V2Mul(gd,  -7.5f), V2Mul(gn,  3.5f)));
+        Vector2 stockBack = V2Add(gBase, V2Add(V2Mul(gd,  -1.0f), V2Mul(gn,  0.8f)));
+        Vector2 stockTip  = V2Add(gBase, V2Add(V2Mul(gd,  21.5f), V2Mul(gn,  0.8f)));
+        Vector2 brlBack   = V2Add(gBase, V2Add(V2Mul(gd,   0.5f), V2Mul(gn, -3.0f)));
+        Vector2 brlTip    = V2Add(gBase, V2Add(V2Mul(gd,  25.5f), V2Mul(gn, -3.0f)));
+
+        // Dark walnut curved grip & lower wooden stock (with black silhouette outline)
+        DrawLineEx(pommelPos, gripMid,  8.6f, BLACK);
+        DrawLineEx(gripMid,   stockBack,8.2f, BLACK);
+        DrawLineEx(stockBack, stockTip, 7.2f, BLACK);
+        DrawLineEx(pommelPos, gripMid,  6.2f, woodDark);
+        DrawLineEx(gripMid,   stockBack,5.8f, woodMid);
+        DrawLineEx(stockBack, stockTip, 4.8f, woodDark);
+
+        // Golden pommel cap at bottom of grip
+        DrawCircleV(pommelPos, 4.8f, BLACK);
+        DrawCircleV(pommelPos, 3.5f, goldHi);
+        DrawCircleV(V2Add(pommelPos, V2Mul(gn, 1.0f)), 2.2f, goldDark);
+
+        // Silver-grey trigger guard under the breech
+        Vector2 tgA = V2Add(gBase, V2Add(V2Mul(gd, -3.2f), V2Mul(gn, 3.0f)));
+        Vector2 tgB = V2Add(gBase, V2Add(V2Mul(gd, -1.2f), V2Mul(gn, 7.8f)));
+        Vector2 tgC = V2Add(gBase, V2Add(V2Mul(gd,  3.2f), V2Mul(gn, 7.6f)));
+        Vector2 tgD = V2Add(gBase, V2Add(V2Mul(gd,  4.4f), V2Mul(gn, 3.0f)));
+        DrawLineEx(tgA, tgB, 3.2f, BLACK);
+        DrawLineEx(tgB, tgC, 3.2f, BLACK);
+        DrawLineEx(tgC, tgD, 3.2f, BLACK);
+        DrawLineEx(tgA, tgB, 1.8f, silverMid);
+        DrawLineEx(tgB, tgC, 1.8f, silverHi);
+        DrawLineEx(tgC, tgD, 1.8f, silverMid);
+
+        // Bright steel-white / light-gray top barrel (matching Squire's sword blade tones) + raised front sight
+        Color brlGray  = { 162, 170, 182, 255 };
+        Color brlSteel = { 228, 234, 242, 255 };
+        DrawLineEx(brlBack, brlTip, 6.8f, BLACK);
+        DrawLineEx(brlBack, brlTip, 4.6f, brlGray);
+        DrawLineEx(V2Add(brlBack, V2Mul(gn, -0.8f)), V2Add(brlTip, V2Mul(gn, -0.8f)), 2.8f, brlSteel);
+        DrawLineEx(V2Add(brlBack, V2Mul(gn, -1.6f)), V2Add(brlTip, V2Mul(gn, -1.6f)), 1.1f, WHITE);
+        // Raised steel-white front sight at muzzle
+        Vector2 sightTip = V2Add(brlTip, V2Add(V2Mul(gd, -1.0f), V2Mul(gn, -4.6f)));
+        DrawLineEx(V2Sub(brlTip, V2Mul(gd, 1.0f)), sightTip, 4.0f, BLACK);
+        DrawLineEx(V2Sub(brlTip, V2Mul(gd, 1.0f)), sightTip, 2.2f, brlSteel);
+
+        // Silver-grey flintlock lockplate & tall cocked hammer
+        Vector2 lockA = V2Add(gBase, V2Add(V2Mul(gd, -4.0f), V2Mul(gn,  1.2f)));
+        Vector2 lockB = V2Add(gBase, V2Add(V2Mul(gd,  4.5f), V2Mul(gn, -1.5f)));
+        DrawLineEx(lockA, lockB, 6.2f, BLACK);
+        DrawLineEx(lockA, lockB, 4.2f, silverMid);
+        Vector2 hamBase = V2Add(gBase, V2Add(V2Mul(gd, -0.5f), V2Mul(gn, -2.5f)));
+        Vector2 hamMid  = V2Add(gBase, V2Add(V2Mul(gd, -0.2f), V2Mul(gn, -8.5f)));
+        Vector2 hamTop  = V2Add(gBase, V2Add(V2Mul(gd,  1.8f), V2Mul(gn, -11.8f)));
+        DrawLineEx(hamBase, hamMid, 4.8f, BLACK);
+        DrawLineEx(hamMid,  hamTop, 4.2f, BLACK);
+        DrawLineEx(hamBase, hamMid, 2.8f, silverHi);
+        DrawLineEx(hamMid,  hamTop, 2.2f, silverHi);
+
+        // Small silver ramrod pins under the wooden stock
+        DrawCircleV(V2Add(gBase, V2Add(V2Mul(gd, 11.0f), V2Mul(gn, 2.4f))), 1.7f, silverHi);
+        DrawCircleV(V2Add(gBase, V2Add(V2Mul(gd, 17.5f), V2Mul(gn, 2.4f))), 1.7f, silverHi);
+    }
+
+    // ===== HORIZONTAL CUTLASS SLASH AFTERIMAGE EFFECT =====
+    if (cp->slashTimer > 0.0f) {
+        float st = cp->slashTimer / 0.28f;
+        float deg = cp->slashAngle * RAD2DEG;
+        for (int tr = 0; tr < 3; tr++) {
+            float off = (float)tr * 16.0f;
+            float alpha = st * (0.72f - (float)tr * 0.20f);
+            Color arcCol = (tr == 0) ? WHITE : ((tr == 1) ? jadeLight : jadeBlade);
+            DrawRing(c, r + 6.0f - (float)tr * 2.0f, r + 24.0f - (float)tr * 3.0f,
+                     deg - 58.0f - off, deg + 52.0f - off * 0.5f, 20, Fade(arcCol, alpha));
+        }
+    }
+
+    // ===== GUNSHOT TRACER EFFECT =====
+    if (cp->gunFlashTimer > 0.0f) {
+        float gt = cp->gunFlashTimer / 0.22f;
+        Vector2 muzzle = V2Add(c, (Vector2){ cosf(cp->aimAngle) * (r * 0.96f + 26.0f), sinf(cp->aimAngle) * (r * 0.96f + 26.0f) });
+        DrawLineEx(muzzle, cp->gunEndPos, 4.0f * gt, Fade(GOLD, 0.85f * gt));
+        DrawLineEx(muzzle, cp->gunEndPos, 1.8f * gt, Fade(WHITE, 0.95f * gt));
+        DrawCircleV(muzzle, 8.0f * gt, Fade(ORANGE, 0.85f * gt));
+    }
+
+    // ===== FLUTTERING PIRATE CAPTAIN HAT (on top of ball) =====
+    {
+        float fL = sinf(wave) * 2.4f;
+        float fR = sinf(wave + 1.4f) * 2.4f;
+        Vector2 hatBase = { c.x, c.y - r + 4.0f };
+
+        // 3 red feathers fluttering on the right side of the hat
+        for (int f = 0; f < 3; f++) {
+            float ff = (float)f;
+            float flut = sinf(wave * 1.15f + ff * 0.9f) * (3.2f + ff * 0.9f);
+            Vector2 fRoot = { hatBase.x + 11.0f + ff * 2.2f, hatBase.y - 10.0f + ff * 1.5f };
+            Vector2 fMid  = { fRoot.x + 10.0f + ff * 2.0f, fRoot.y - 10.0f + flut * 0.6f };
+            Vector2 fTip  = { fRoot.x + 19.0f + ff * 3.0f, fRoot.y - 15.0f + ff * 2.5f + flut };
+            Color fc = (f == 1) ? feather2 : feather1;
+            DrawLineEx(fRoot, fMid, 5.2f, BLACK);
+            DrawLineEx(fMid,  fTip, 3.8f, BLACK);
+            DrawLineEx(fRoot, fMid, 3.4f, fc);
+            DrawLineEx(fMid,  fTip, 2.2f, fc);
+        }
+
+        // Hat crown & upturned black tricorn brim (with fluttering tips)
+        Vector2 brimL  = { hatBase.x - 27.0f, hatBase.y - 3.0f + fL };
+        Vector2 brimR  = { hatBase.x + 27.0f, hatBase.y - 3.0f + fR };
+        Vector2 crownL = { hatBase.x - 16.0f, hatBase.y - 19.0f + fL * 0.4f };
+        Vector2 crownM = { hatBase.x,         hatBase.y - 23.0f };
+        Vector2 crownR = { hatBase.x + 16.0f, hatBase.y - 19.0f + fR * 0.4f };
+        Vector2 botL   = { hatBase.x - 19.0f, hatBase.y + 3.0f };
+        Vector2 botR   = { hatBase.x + 19.0f, hatBase.y + 3.0f };
+
+        DrawTri(brimL, crownL, botL, hatBlack);
+        DrawTri(brimR, botR, crownR, hatBlack);
+        DrawTri(crownL, crownM, botL, hatBlack);
+        DrawTri(crownM, crownR, botR, hatBlack);
+        DrawTri(crownM, botR, botL, hatBlack);
+
+        // Gold trim along the tricorn edges
+        DrawLineEx(brimL, crownL, 2.6f, goldHi);
+        DrawLineEx(crownL, crownM, 2.6f, goldHi);
+        DrawLineEx(crownM, crownR, 2.6f, goldHi);
+        DrawLineEx(crownR, brimR, 2.6f, goldHi);
+        DrawLineEx(brimL, botL, 2.0f, goldDark);
+        DrawLineEx(botL, botR, 2.0f, goldDark);
+        DrawLineEx(botR, brimR, 2.0f, goldDark);
+
+        // White skull & crossbones emblem in the center of the hat
+        Vector2 sk = { hatBase.x, hatBase.y - 10.5f };
+        DrawLineEx((Vector2){ sk.x - 6.5f, sk.y + 4.5f }, (Vector2){ sk.x + 6.5f, sk.y - 2.5f }, 2.2f, WHITE);
+        DrawLineEx((Vector2){ sk.x - 6.5f, sk.y - 2.5f }, (Vector2){ sk.x + 6.5f, sk.y + 4.5f }, 2.2f, WHITE);
+        DrawCircleV((Vector2){ sk.x, sk.y - 1.5f }, 4.6f, WHITE);
+        DrawRectangle((int)(sk.x - 2.6f), (int)(sk.y + 1.5f), 5, 3, WHITE);
+        DrawCircleV((Vector2){ sk.x - 1.7f, sk.y - 1.8f }, 1.2f, BLACK);
+        DrawCircleV((Vector2){ sk.x + 1.7f, sk.y - 1.8f }, 1.2f, BLACK);
+    }
 }
 
 static void DrawWindStunOverlay(const Ball* b)
@@ -6757,29 +8589,95 @@ static void DrawWindStunOverlay(const Ball* b)
     DrawText(tStr, (int)b->pos.x - MeasureText(tStr, 11) / 2, (int)barY - 12, 11, (Color){ 110, 20, 165, 255 });
 }
 
-// Trident: shaft length increased by +20% (-24.8f instead of -20.0f) and shaft width increased by +30% (3.9f instead of 3.0f)
+// Trident: redesigned with bold black outline, golden pommel & neck collar, curved U-fork & bright prong tips
 static void DrawTrident(Vector2 c, float angle, Color col)
 {
     Vector2 d = { cosf(angle), sinf(angle) };
     Vector2 n = { -d.y, d.x };
 
-    Vector2 base = V2Add(c, V2Mul(d, -24.8f)); // +20% shaft length
-    Vector2 neck = V2Add(c, V2Mul(d, 4.0f));
-    Vector2 tip  = V2Add(c, V2Mul(d, 20.0f));
-    Vector2 l0 = V2Add(neck, V2Mul(n, 9.0f)),  r0 = V2Add(neck, V2Mul(n, -9.0f));
-    Vector2 l1 = V2Add(l0, V2Mul(d, 14.0f)),   r1 = V2Add(r0, V2Mul(d, 14.0f));
+    Color shaftCol  = { 196, 138, 16, 255 };
+    Color forkCol   = col;
+    Color tipBright = { 255, 252, 185, 255 };
+    Color collarCol = { 255, 225, 75, 255 };
 
-    DrawLineEx(base, tip, 3.9f, col);          // +30% shaft width
-    DrawLineEx(l0, r0, 3.2f, col);
-    DrawLineEx(l0, l1, 3.0f, col);
-    DrawLineEx(r0, r1, 3.0f, col);
+    Vector2 pommel   = V2Add(c, V2Mul(d, -26.0f));
+    Vector2 shaftEnd = V2Add(c, V2Mul(d,   4.5f));
+    Vector2 forkRoot = V2Add(c, V2Mul(d,   7.5f));
 
-    Vector2 ends[3] = { tip, l1, r1 };
-    for (int i = 0; i < 3; i++) {
-        DrawTri(V2Add(ends[i], V2Mul(d, 7.0f)),
-                V2Add(ends[i], V2Mul(n, 3.5f)),
-                V2Add(ends[i], V2Mul(n, -3.5f)), col);
-    }
+    // Curved U-shaped outer prong waypoints (left +n, right -n)
+    Vector2 lMid   = V2Add(c, V2Add(V2Mul(d,  9.5f), V2Mul(n,  7.2f)));
+    Vector2 lElbow = V2Add(c, V2Add(V2Mul(d, 14.5f), V2Mul(n, 10.2f)));
+    Vector2 lTop   = V2Add(c, V2Add(V2Mul(d, 21.5f), V2Mul(n,  9.5f)));
+    Vector2 lTip   = V2Add(c, V2Add(V2Mul(d, 26.8f), V2Mul(n,  9.0f)));
+
+    Vector2 rMid   = V2Add(c, V2Add(V2Mul(d,  9.5f), V2Mul(n, -7.2f)));
+    Vector2 rElbow = V2Add(c, V2Add(V2Mul(d, 14.5f), V2Mul(n, -10.2f)));
+    Vector2 rTop   = V2Add(c, V2Add(V2Mul(d, 21.5f), V2Mul(n, -9.5f)));
+    Vector2 rTip   = V2Add(c, V2Add(V2Mul(d, 26.8f), V2Mul(n, -9.0f)));
+
+    Vector2 cTop   = V2Add(c, V2Mul(d, 22.5f));
+    Vector2 cTip   = V2Add(c, V2Mul(d, 28.5f));
+
+    // Pass 1: Bold black outline for pommel, shaft, curved U-fork & 3 prongs
+    DrawCircleV(pommel, 4.6f, BLACK);
+    DrawLineEx(pommel, shaftEnd, 6.8f, BLACK);
+    DrawCircleV(forkRoot, 4.8f, BLACK);
+    DrawLineEx(forkRoot, lMid, 6.6f, BLACK);
+    DrawLineEx(lMid, lElbow, 6.4f, BLACK);
+    DrawLineEx(lElbow, lTop, 6.0f, BLACK);
+    DrawLineEx(forkRoot, rMid, 6.6f, BLACK);
+    DrawLineEx(rMid, rElbow, 6.4f, BLACK);
+    DrawLineEx(rElbow, rTop, 6.0f, BLACK);
+    DrawLineEx(forkRoot, cTop, 6.0f, BLACK);
+    DrawCircleV(lMid, 3.2f, BLACK);
+    DrawCircleV(lElbow, 3.1f, BLACK);
+    DrawCircleV(rMid, 3.2f, BLACK);
+    DrawCircleV(rElbow, 3.1f, BLACK);
+
+    // Outline triangles for the 3 prong tips
+    DrawTri(V2Add(lTip, V2Mul(d, 1.4f)), V2Add(lTop, V2Mul(n, 4.6f)), V2Add(lTop, V2Mul(n, -4.6f)), BLACK);
+    DrawTri(V2Add(rTip, V2Mul(d, 1.4f)), V2Add(rTop, V2Mul(n, 4.6f)), V2Add(rTop, V2Mul(n, -4.6f)), BLACK);
+    DrawTri(V2Add(cTip, V2Mul(d, 1.4f)), V2Add(cTop, V2Mul(n, 4.6f)), V2Add(cTop, V2Mul(n, -4.6f)), BLACK);
+
+    // Pass 2: Inner gold shaft & pommel
+    DrawLineEx(pommel, shaftEnd, 3.6f, shaftCol);
+    DrawLineEx(V2Add(pommel, V2Mul(n, 0.9f)), V2Add(shaftEnd, V2Mul(n, 0.9f)), 1.3f, forkCol);
+    DrawCircleV(pommel, 2.7f, collarCol);
+    DrawCircleV(V2Add(pommel, V2Mul(n, 0.7f)), 1.2f, tipBright);
+
+    // Flared golden neck collar separating shaft from curved fork
+    Vector2 colBL = V2Add(shaftEnd, V2Add(V2Mul(d, -1.6f), V2Mul(n, -4.6f)));
+    Vector2 colBR = V2Add(shaftEnd, V2Add(V2Mul(d, -1.6f), V2Mul(n,  4.6f)));
+    Vector2 colTL = V2Add(shaftEnd, V2Add(V2Mul(d,  2.6f), V2Mul(n, -4.6f)));
+    Vector2 colTR = V2Add(shaftEnd, V2Add(V2Mul(d,  2.6f), V2Mul(n,  4.6f)));
+    DrawTri(colBL, colBR, colTR, BLACK);
+    DrawTri(colBL, colTR, colTL, BLACK);
+    DrawLineEx(V2Add(shaftEnd, V2Add(V2Mul(d, 0.5f), V2Mul(n, -3.4f))),
+               V2Add(shaftEnd, V2Add(V2Mul(d, 0.5f), V2Mul(n,  3.4f))), 2.6f, collarCol);
+    DrawLineEx(V2Add(shaftEnd, V2Add(V2Mul(d, 0.5f), V2Mul(n,  0.2f))),
+               V2Add(shaftEnd, V2Add(V2Mul(d, 0.5f), V2Mul(n,  3.2f))), 1.4f, tipBright);
+
+    // Pass 3: Inner curved U-fork & 3 prongs with bright highlighted tips
+    DrawCircleV(forkRoot, 2.9f, forkCol);
+    DrawLineEx(forkRoot, lMid, 3.6f, forkCol);
+    DrawLineEx(lMid, lElbow, 3.4f, forkCol);
+    DrawLineEx(lElbow, lTop, 3.1f, forkCol);
+    DrawLineEx(forkRoot, rMid, 3.6f, forkCol);
+    DrawLineEx(rMid, rElbow, 3.4f, forkCol);
+    DrawLineEx(rElbow, rTop, 3.1f, forkCol);
+    DrawLineEx(forkRoot, cTop, 3.1f, forkCol);
+    DrawCircleV(lMid, 1.7f, forkCol);
+    DrawCircleV(lElbow, 1.6f, forkCol);
+    DrawCircleV(rMid, 1.7f, forkCol);
+    DrawCircleV(rElbow, 1.6f, forkCol);
+
+    // Bright prong tips
+    DrawTri(lTip, V2Add(lTop, V2Mul(n, 2.7f)), V2Add(lTop, V2Mul(n, -2.7f)), forkCol);
+    DrawTri(rTip, V2Add(rTop, V2Mul(n, 2.7f)), V2Add(rTop, V2Mul(n, -2.7f)), forkCol);
+    DrawTri(cTip, V2Add(cTop, V2Mul(n, 2.8f)), V2Add(cTop, V2Mul(n, -2.8f)), forkCol);
+    DrawTri(lTip, V2Add(lTop, V2Add(V2Mul(d, 2.0f), V2Mul(n, 1.6f))), V2Add(lTop, V2Add(V2Mul(d, 2.0f), V2Mul(n, -1.6f))), tipBright);
+    DrawTri(rTip, V2Add(rTop, V2Add(V2Mul(d, 2.0f), V2Mul(n, 1.6f))), V2Add(rTop, V2Add(V2Mul(d, 2.0f), V2Mul(n, -1.6f))), tipBright);
+    DrawTri(cTip, V2Add(cTop, V2Add(V2Mul(d, 2.2f), V2Mul(n, 1.7f))), V2Add(cTop, V2Add(V2Mul(d, 2.2f), V2Mul(n, -1.7f))), tipBright);
 }
 
 static void DrawBolt(Vector2 c)
@@ -6818,7 +8716,7 @@ static void DrawUnderlay(const Ball* b)
             Vector2 d = V2Sub(b->harpoon.pos, b->pos);
             arrowAngle = atan2f(d.y, d.x);
         }
-        DrawBlackArrow(b->harpoon.pos, arrowAngle, 26.0f, HARPOON_HEAD_SCALE);
+        DrawBlackArrow(b->harpoon.pos, arrowAngle, (float)b->radius * 2.0f, 1.15f);
     }
 
     if (b->type == TYPE_ICE) {
@@ -6928,7 +8826,7 @@ static void DrawUnderlay(const Ball* b)
             }
         } else if (u->fxTimer > 0.0f && u->fxKind == 3) {
             // Bright golden ground cracks at sword impact point (no circle underneath)
-            float a = ClampF(u->fxTimer / 0.55f, 0.0f, 1.0f);
+            float a = ClampF(u->fxTimer / 0.25f, 0.0f, 1.0f);
             DrawGoldenGroundCracks(u->fxPos, (float)BASE_RADIUS * 1.65f, a);
         }
     }
@@ -7052,6 +8950,9 @@ static void DrawBallEntity(const Ball* b)
     if (b->type == TYPE_KNIGHT || b->type == TYPE_KING) {
         DrawFlutteringRoyalCape(b->pos, (float)b->radius, b->type == TYPE_KNIGHT);
     }
+    if (b->type == TYPE_PSYCHIC) {
+        DrawPsychicFlutteringTails(b->pos, (float)b->radius);
+    }
 
     DrawCircleV(b->pos, (float)b->radius, b->color);
 
@@ -7061,7 +8962,7 @@ static void DrawBallEntity(const Ball* b)
     switch (b->type)
     {
         case TYPE_BURST:       DrawBurstCenterFlame(b->pos); break;
-        case TYPE_HARPOON:     DrawHarpoonCenterEmblem(b, enemy); break;
+        case TYPE_HARPOON:     DrawHarpoonCenterEmblem(b); break;
         case TYPE_VERITY:      DrawVerityFace(b); break;
         case TYPE_DEVIL:       DrawDevilFangs(b, enemy); break;
         case TYPE_ICE:         DrawIce3DCube(b->pos); break;
@@ -7092,6 +8993,10 @@ static void DrawBallEntity(const Ball* b)
         case TYPE_CATAPULT:    DrawCatapultDetails(b); break;
         case TYPE_ARCHER:      DrawArcherDetails(b); DrawFlyingArcherFireArrow(&b->archer); break;
         case TYPE_SQUIRE:      DrawSquireDetails(b); break;
+        case TYPE_FLINTLOCK:   DrawFlintlockDetails(b); break;
+        case TYPE_BOMB:        DrawBombDetails(b); DrawFlyingBombArc(&b->bomb); break;
+        case TYPE_CANNON:      DrawCannonDetails(b); break;
+        case TYPE_CAPTAIN:     DrawCaptainDetails(b); break;
         case TYPE_REFORGE_SUB: {
             const char* lvTxt = TextFormat("Lv%d", b->reforgeLevel);
             int tw = MeasureText(lvTxt, 16);
@@ -7120,9 +9025,11 @@ static void DrawBallEntity(const Ball* b)
         DrawRing(b->pos, (float)b->radius, (float)b->radius + 5.0f, 0.0f, 360.0f, 28, Fade(MAROON, 0.85f * pa));
     }
 
-    // Golden immunity shield glow around King while dashing to flag
-    if (IsKingDashing(b)) {
-        DrawRing(b->pos, (float)b->radius + 2.0f, (float)b->radius + 6.0f, 0.0f, 360.0f, 32, GOLD);
+    // Translucent golden immunity ring (1.1x ball radius) whenever a ball has 100% damage immunity
+    if (IsBallDamageImmune(b)) {
+        float immR = (float)b->radius * 1.10f;
+        DrawCircleV(b->pos, immR, Fade(GOLD, 0.22f));
+        DrawRing(b->pos, immR - 2.5f, immR + 1.5f, 0.0f, 360.0f, 36, Fade(GOLD, 0.72f));
     }
 
     if (b->frozen) {
@@ -7153,7 +9060,7 @@ static void DrawBallEntity(const Ball* b)
     DrawWindStunOverlay(b);
 
     if (!b->isSubBall) {
-        int extraTop = (b->type == TYPE_WITCH || b->type == TYPE_KING) ? 20
+        int extraTop = (b->type == TYPE_WITCH || b->type == TYPE_KING || b->type == TYPE_CAPTAIN) ? 20
                      : ((b->type == TYPE_TRIDENT || b->type == TYPE_JUDGEMENT || b->type == TYPE_EXECUTER) ? 16 : 0);
         const char* hpText = TextFormat("%d HP", b->hp);
         Color hpCol = (b->team == 0) ? (Color){ 20, 90, 200, 255 } : (Color){ 200, 30, 30, 255 };
@@ -7294,6 +9201,12 @@ static void DrawEffectsLayer(void)
         if (p->kind == P_HEAL) {
             DrawRectangle((int)p->pos.x - 1, (int)p->pos.y - 5, 2, 10, COL_PLUS);
             DrawRectangle((int)p->pos.x - 5, (int)p->pos.y - 1, 10, 2, COL_PLUS);
+        } else if (p->kind == P_WEAKNESS) {
+            DrawRectangle((int)p->pos.x - 4, (int)p->pos.y - 1, 8, 2, LIGHTGRAY);
+        } else if (p->kind == P_STRENGTHEN) {
+            DrawTri((Vector2){ p->pos.x, p->pos.y - 5.0f },
+                    (Vector2){ p->pos.x - 4.0f, p->pos.y + 3.0f },
+                    (Vector2){ p->pos.x + 4.0f, p->pos.y + 3.0f }, GOLD);
         }
     }
 
@@ -7485,6 +9398,43 @@ static void DrawEffectsLayer(void)
             }
         }
     }
+
+    // Flintlock bullets
+    for (int i = 0; i < FLINT_BULLET_MAX; i++) {
+        const FlintBullet* fb = &g_flintBullets[i];
+        if (!fb->active) continue;
+        Vector2 tail = V2Sub(fb->pos, V2Mul(Norm(fb->vel), 10.0f));
+        DrawLineEx(tail, fb->pos, 3.2f, Fade(GOLD, 0.65f));
+        DrawCircleV(fb->pos, 4.4f, BLACK);
+        DrawCircleV(fb->pos, 3.2f, (Color){ 195, 202, 212, 255 });
+        DrawCircleV((Vector2){ fb->pos.x - 1.0f, fb->pos.y - 1.0f }, 1.2f, WHITE);
+    }
+
+    // Bomb mini-bombs (3.0s fuse, 8 HP touch or 8 HP AoE = BASE_RADIUS)
+    for (int i = 0; i < MINI_BOMB_MAX; i++) {
+        const MiniBomb* mb = &g_miniBombs[i];
+        if (!mb->active) continue;
+        float frac = ClampF(mb->age / MINI_BOMB_LIFE, 0.0f, 1.0f);
+        // Subtle danger AoE ring (BASE_RADIUS) pulsing faster near detonation
+        float blink = 0.5f + 0.5f * sinf((float)GetTime() * (8.0f + frac * 22.0f));
+        DrawCircleV(mb->pos, MINI_BOMB_EXPLODE_R, Fade(ORANGE, 0.08f + 0.12f * frac * blink));
+        DrawRing(mb->pos, MINI_BOMB_EXPLODE_R - 1.5f, MINI_BOMB_EXPLODE_R, 0.0f, 360.0f, 24,
+                 Fade(frac > 0.7f ? RED : ORANGE, 0.35f + 0.40f * blink));
+        DrawSingleMiniBombArt(mb->pos, MINI_BOMB_RAD, (float)GetTime() * 14.0f + (float)i);
+    }
+
+    // Cannonballs (heavy black/grey iron sphere with smoky trail)
+    for (int i = 0; i < CANNON_BALL_MAX; i++) {
+        const CannonBall* cb = &g_cannonBalls[i];
+        if (!cb->active) continue;
+        Vector2 dir = Norm(cb->vel);
+        Vector2 tail = V2Sub(cb->pos, V2Mul(dir, 22.0f));
+        DrawLineEx(tail, cb->pos, 10.0f, Fade((Color){ 60, 62, 68, 255 }, 0.35f));
+        DrawCircleV(cb->pos, CANNON_RAD + 1.5f, BLACK);
+        DrawCircleV(cb->pos, CANNON_RAD, (Color){ 28, 30, 36, 255 });
+        DrawCircleV((Vector2){ cb->pos.x - 2.6f, cb->pos.y - 2.6f }, CANNON_RAD * 0.58f, (Color){ 78, 84, 94, 255 });
+        DrawCircleV((Vector2){ cb->pos.x - 3.8f, cb->pos.y - 3.8f }, CANNON_RAD * 0.25f, (Color){ 185, 192, 204, 255 });
+    }
 }
 
 static void DrawPopups(void)
@@ -7492,11 +9442,52 @@ static void DrawPopups(void)
     for (int i = 0; i < POPUP_MAX; i++) {
         const Popup* p = &g_popups[i];
         if (!p->active) continue;
-        float t = p->age / POPUP_TIME;
-        const char* s = TextFormat(p->heal ? "+%d HP" : "-%d HP", p->value);
-        int w = MeasureText(s, 18);
-        DrawText(s, (int)(p->pos.x - w * 0.5f), (int)(p->pos.y - 45.0f - p->age * 45.0f), 18,
-                 Fade(p->heal ? GREEN : RED, 1.0f - t));
+
+        float alpha = 1.0f;
+        if (p->fading) {
+            alpha = 1.0f - ClampF(p->fadeAge / POPUP_FADE_TIME, 0.0f, 1.0f);
+        }
+
+        const char* s;
+        int fontSize = 18;
+        Color col;
+
+        if (p->isImmune) {
+            s = "IMMUNE";
+            fontSize = 18;
+            col = WHITE;
+        } else if (p->heal) {
+            s = TextFormat("+%d HP", p->value);
+            fontSize = 18;
+            col = GREEN;
+        } else {
+            s = TextFormat("-%d HP", p->value);
+            if (p->isCrit) {
+                // Crit popup starts larger, shrinks smoothly over its lifetime, and uses a deeper dark red
+                float lifeT = ClampF(p->age / (POPUP_HOLD_TIME + POPUP_FADE_TIME), 0.0f, 1.0f);
+                fontSize = (int)roundf(28.0f - 10.0f * lifeT);
+                col = p->isReduced ? (Color){ 20, 75, 210, 255 } : (Color){ 165, 10, 20, 255 };
+            } else if (p->isReduced) {
+                fontSize = 18;
+                col = (Color){ 30, 125, 255, 255 }; // blue for % damage-reduced hits
+            } else {
+                fontSize = 18;
+                col = RED;
+            }
+        }
+
+        int w = MeasureText(s, fontSize);
+        int x = (int)(p->pos.x - w * 0.5f);
+        int y = (int)(p->pos.y - 45.0f - p->age * 38.0f);
+
+        // Subtle shadow so white "IMMUNE" and deep red crits remain razor-sharp on any arena surface
+        if (p->isImmune || p->isCrit) {
+            DrawText(s, x + 1, y + 1, fontSize, Fade(BLACK, 0.78f * alpha));
+            if (p->isImmune) {
+                DrawText(s, x - 1, y, fontSize, Fade(BLACK, 0.65f * alpha));
+            }
+        }
+        DrawText(s, x, y, fontSize, Fade(col, alpha));
     }
 }
 
@@ -7515,7 +9506,7 @@ static const BallRarity g_ballRarity[TYPE_COUNT] = {
     RARITY_UNCOMMON,    // TYPE_ICE
     RARITY_RARE,        // TYPE_TRIDENT
     RARITY_COMMON,      // TYPE_ELECTRIC
-    RARITY_RARE,        // TYPE_WITCH
+    RARITY_MYTHIC,      // TYPE_WITCH
     RARITY_RARE,        // TYPE_BOW
     RARITY_RARE,        // TYPE_REFORGE
     RARITY_UNCOMMON,    // TYPE_NINJA
@@ -7540,7 +9531,11 @@ static const BallRarity g_ballRarity[TYPE_COUNT] = {
     RARITY_MYTHIC,      // TYPE_KING
     RARITY_MYTHIC,      // TYPE_CATAPULT
     RARITY_RARE,        // TYPE_ARCHER
-    RARITY_COMMON       // TYPE_SQUIRE
+    RARITY_COMMON,      // TYPE_SQUIRE
+    RARITY_COMMON,      // TYPE_FLINTLOCK
+    RARITY_UNCOMMON,    // TYPE_BOMB
+    RARITY_RARE,        // TYPE_CANNON
+    RARITY_LEGENDARY    // TYPE_CAPTAIN
 };
 
 static const char* const g_rarityNames[RARITY_COUNT] = {
@@ -7580,153 +9575,162 @@ static void BuildSaveCandidatePaths(char paths[3][512], int* outCount)
     const char* appData = getenv("APPDATA");
     if (!appData || !appData[0]) appData = getenv("USERPROFILE");
     if (appData && appData[0]) {
-        snprintf(paths[count++], 512, "%s/ballvball_save.cfg", appData);
+        snprintf(paths[count++], 512, "%s/ballvball_save.dat", appData);
     }
     const char* appDir = GetApplicationDirectory();
     if (appDir && appDir[0]) {
-        snprintf(paths[count++], 512, "%sballvball_save.cfg", appDir);
+        snprintf(paths[count++], 512, "%sballvball_save.dat", appDir);
     }
-    snprintf(paths[count++], 512, "ballvball_save.cfg");
+    snprintf(paths[count++], 512, "ballvball_save.dat");
     *outCount = count;
+}
+
+#define SAVE_MAGIC_V7  0x42564237u
+#define SAVE_KEY_XOR   0xA5C3F197u
+#define SAVE_KEY_HASH  0x7A3F91C4E82B5D01ULL
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t nonce;
+    int32_t  tickets;
+    int32_t  botTotalWins;
+    int32_t  botWinStreak[4];
+    int32_t  pityRare;
+    int32_t  pityMythic;
+    int32_t  pityLegend;
+    float    online15mSec;
+    float    online1hSec;
+    int32_t  challengerActive;
+    int32_t  challengerWins;
+    int32_t  challengerCurDiff;
+    int32_t  ballCount;
+    uint8_t  unlocked[TYPE_COUNT];
+    int32_t  ballCopies[TYPE_COUNT];
+    int32_t  ballUpgradeLv[TYPE_COUNT];
+    uint64_t checksum;
+} SaveBinaryV7;
+
+static void XorSaveStream(uint8_t* data, size_t len, uint32_t nonce)
+{
+    uint32_t state = nonce ^ SAVE_KEY_XOR;
+    if (state == 0) state = 0x9E3779B9u;
+    for (size_t i = 0; i < len; i++) {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        data[i] ^= (uint8_t)((state ^ (uint32_t)(i * 31u)) & 0xFFu);
+    }
+}
+
+static uint64_t ComputeSaveChecksum(const SaveBinaryV7* s)
+{
+    const uint8_t* bytes = (const uint8_t*)s;
+    size_t len = offsetof(SaveBinaryV7, checksum);
+    uint64_t h = 14695981039346656037ULL ^ SAVE_KEY_HASH;
+    for (size_t i = 0; i < len; i++) {
+        h ^= (uint64_t)bytes[i];
+        h *= 1099511628211ULL;
+    }
+    return h ^ (SAVE_KEY_HASH >> 17);
 }
 
 static bool WriteProgressToFile(const char* path)
 {
-    FILE* f = fopen(path, "w");
+    FILE* f = fopen(path, "wb");
     if (!f) return false;
-    fprintf(f, "BALLVBALL_SAVE_V6\n");
-    fprintf(f, "TICKETS %d\n", g_playerTickets);
-    fprintf(f, "BOT_TOTAL_WINS %d\n", g_botTotalWins);
-    fprintf(f, "BOT_STREAKS %d %d %d %d\n",
-            g_botWinStreak[0], g_botWinStreak[1], g_botWinStreak[2], g_botWinStreak[3]);
-    fprintf(f, "PITY %d %d %d\n", g_pityRare, g_pityMythic, g_pityLegend);
-    fprintf(f, "ONLINE_TIMERS %.2f %.2f\n", g_online15mSec, g_online1hSec);
-    fprintf(f, "CHALLENGER %d %d %d\n",
-            g_challengerActive ? 1 : 0, g_challengerWins, (int)g_challengerCurDiff);
-    fprintf(f, "BALLS %d\n", (int)TYPE_COUNT);
+
+    SaveBinaryV7 s;
+    memset(&s, 0, sizeof(s));
+    s.magic = SAVE_MAGIC_V7;
+    s.version = 7u;
+    uint32_t nonce = ((uint32_t)GetRandomValue(0, 65535) << 16) ^
+                     (uint32_t)GetRandomValue(0, 65535) ^
+                     (uint32_t)time(NULL);
+    s.nonce = (nonce != 0) ? nonce : 0x9E3779B9u;
+
+    s.tickets = g_playerTickets;
+    s.botTotalWins = g_botTotalWins;
+    for (int i = 0; i < 4; i++) s.botWinStreak[i] = g_botWinStreak[i];
+    s.pityRare = g_pityRare;
+    s.pityMythic = g_pityMythic;
+    s.pityLegend = g_pityLegend;
+    s.online15mSec = g_online15mSec;
+    s.online1hSec = g_online1hSec;
+    s.challengerActive = g_challengerActive ? 1 : 0;
+    s.challengerWins = g_challengerWins;
+    s.challengerCurDiff = (int32_t)g_challengerCurDiff;
+    s.ballCount = TYPE_COUNT;
     for (int i = 0; i < TYPE_COUNT; i++) {
-        fprintf(f, "%d %d %d %d\n",
-                i, g_unlocked[i] ? 1 : 0, g_ballCopies[i], g_ballUpgradeLv[i]);
+        s.unlocked[i] = g_unlocked[i] ? 1 : 0;
+        s.ballCopies[i] = g_ballCopies[i];
+        s.ballUpgradeLv[i] = g_ballUpgradeLv[i];
     }
+    s.checksum = ComputeSaveChecksum(&s);
+
+    size_t encOffset = offsetof(SaveBinaryV7, tickets);
+    XorSaveStream(((uint8_t*)&s) + encOffset, sizeof(SaveBinaryV7) - encOffset, s.nonce);
+
+    bool ok = (fwrite(&s, sizeof(s), 1, f) == 1);
     fflush(f);
     fclose(f);
-    return true;
+    return ok;
 }
 
 static bool ReadProgressFromFile(const char* path)
 {
-    FILE* f = fopen(path, "r");
+    FILE* f = fopen(path, "rb");
     if (!f) return false;
 
-    char header[64] = { 0 };
-    if (fscanf(f, "%63s", header) != 1) {
+    SaveBinaryV7 s;
+    if (fread(&s, sizeof(s), 1, f) != 1 || fgetc(f) != EOF) {
         fclose(f);
         return false;
     }
-
-    if (strcmp(header, "BALLVBALL_SAVE_V6") == 0) {
-        bool tempUnlocked[TYPE_COUNT];
-        int  tempCopies[TYPE_COUNT];
-        int  tempUpgrades[TYPE_COUNT];
-        memset(tempUnlocked, 0, sizeof(tempUnlocked));
-        memset(tempCopies, 0, sizeof(tempCopies));
-        memset(tempUpgrades, 0, sizeof(tempUpgrades));
-        tempUnlocked[TYPE_BURST] = true;
-        tempCopies[TYPE_BURST] = 1;
-
-        int tempTickets = 15;
-        int tempBotWins = 0;
-        int tempStreaks[4] = { 0, 0, 0, 0 };
-        int tempPR = 0, tempPM = 0, tempPL = 0;
-        float tempT15 = 0.0f, tempT1h = 0.0f;
-        int tempChAct = 0, tempChWins = 0, tempChDiff = (int)BOT_IMPOSSIBLE;
-
-        char key[64];
-        while (fscanf(f, "%63s", key) == 1) {
-            if (strcmp(key, "TICKETS") == 0) {
-                fscanf(f, "%d", &tempTickets);
-            } else if (strcmp(key, "BOT_TOTAL_WINS") == 0) {
-                fscanf(f, "%d", &tempBotWins);
-            } else if (strcmp(key, "BOT_STREAKS") == 0) {
-                fscanf(f, "%d %d %d %d", &tempStreaks[0], &tempStreaks[1], &tempStreaks[2], &tempStreaks[3]);
-            } else if (strcmp(key, "PITY") == 0) {
-                fscanf(f, "%d %d %d", &tempPR, &tempPM, &tempPL);
-            } else if (strcmp(key, "ONLINE_TIMERS") == 0) {
-                fscanf(f, "%f %f", &tempT15, &tempT1h);
-            } else if (strcmp(key, "CHALLENGER") == 0) {
-                fscanf(f, "%d %d %d", &tempChAct, &tempChWins, &tempChDiff);
-            } else if (strcmp(key, "BALLS") == 0) {
-                int savedCount = 0;
-                if (fscanf(f, "%d", &savedCount) == 1) {
-                    for (int i = 0; i < savedCount; i++) {
-                        int idx = -1, u = 0, cp = 0, lv = 0;
-                        if (fscanf(f, "%d %d %d %d", &idx, &u, &cp, &lv) == 4) {
-                            if (idx >= 0 && idx < TYPE_COUNT) {
-                                tempUnlocked[idx] = (u != 0);
-                                tempCopies[idx] = (cp >= 0) ? cp : 0;
-                                tempUpgrades[idx] = (lv >= 0) ? lv : 0;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        fclose(f);
-
-        tempUnlocked[TYPE_BURST] = true;
-        memcpy(g_unlocked, tempUnlocked, sizeof(g_unlocked));
-        memcpy(g_ballCopies, tempCopies, sizeof(g_ballCopies));
-        memcpy(g_ballUpgradeLv, tempUpgrades, sizeof(g_ballUpgradeLv));
-        g_playerTickets = (tempTickets >= 0) ? tempTickets : 0;
-        g_botTotalWins = (tempBotWins >= 0) ? tempBotWins : 0;
-        for (int i = 0; i < 4; i++) g_botWinStreak[i] = (tempStreaks[i] >= 0) ? tempStreaks[i] : 0;
-        g_pityRare = (tempPR >= 0) ? tempPR : 0;
-        g_pityMythic = (tempPM >= 0) ? tempPM : 0;
-        g_pityLegend = (tempPL >= 0) ? tempPL : 0;
-        g_online15mSec = ClampF(tempT15, 0.0f, 900.0f);
-        g_online1hSec = ClampF(tempT1h, 0.0f, 3600.0f);
-        g_challengerActive = (tempChAct != 0);
-        g_challengerWins = (tempChWins >= 0 && tempChWins < 5) ? tempChWins : 0;
-        g_challengerCurDiff = (tempChDiff == (int)BOT_HARD) ? BOT_HARD : BOT_IMPOSSIBLE;
-        return true;
-    }
-
-    if (strcmp(header, "BALLVBALL_SAVE_V5") == 0) {
-        bool tempUnlocked[TYPE_COUNT];
-        memset(tempUnlocked, 0, sizeof(tempUnlocked));
-        tempUnlocked[TYPE_BURST] = true;
-        char key[64];
-        while (fscanf(f, "%63s", key) == 1) {
-            if (strcmp(key, "UNLOCKED") == 0) {
-                int savedCount = 0;
-                if (fscanf(f, "%d", &savedCount) == 1) {
-                    for (int i = 0; i < savedCount; i++) {
-                        int idx = -1, val = 0;
-                        if (fscanf(f, "%d %d", &idx, &val) == 2 && idx >= 0 && idx < TYPE_COUNT) {
-                            tempUnlocked[idx] = (val != 0);
-                        }
-                    }
-                }
-            }
-        }
-        fclose(f);
-        tempUnlocked[TYPE_BURST] = true;
-        memcpy(g_unlocked, tempUnlocked, sizeof(g_unlocked));
-        for (int i = 0; i < TYPE_COUNT; i++) {
-            g_ballCopies[i] = g_unlocked[i] ? 1 : 0;
-            g_ballUpgradeLv[i] = 0;
-        }
-        g_playerTickets = 15;
-        return true;
-    }
-
     fclose(f);
-    return false;
+
+    if (s.magic != SAVE_MAGIC_V7 || s.version != 7u) {
+        return false;
+    }
+
+    size_t encOffset = offsetof(SaveBinaryV7, tickets);
+    XorSaveStream(((uint8_t*)&s) + encOffset, sizeof(SaveBinaryV7) - encOffset, s.nonce);
+
+    if (ComputeSaveChecksum(&s) != s.checksum || s.ballCount != TYPE_COUNT) {
+        return false;
+    }
+
+    for (int i = 0; i < TYPE_COUNT; i++) {
+        g_unlocked[i] = (s.unlocked[i] != 0);
+        g_ballCopies[i] = (s.ballCopies[i] >= 0) ? s.ballCopies[i] : 0;
+        g_ballUpgradeLv[i] = (s.ballUpgradeLv[i] >= 0) ? s.ballUpgradeLv[i] : 0;
+    }
+
+    g_playerTickets = (s.tickets >= 0) ? s.tickets : 0;
+    g_botTotalWins = (s.botTotalWins >= 0) ? s.botTotalWins : 0;
+    for (int i = 0; i < 4; i++) g_botWinStreak[i] = (s.botWinStreak[i] >= 0) ? s.botWinStreak[i] : 0;
+    g_pityRare = (s.pityRare >= 0) ? s.pityRare : 0;
+    g_pityMythic = (s.pityMythic >= 0) ? s.pityMythic : 0;
+    g_pityLegend = (s.pityLegend >= 0) ? s.pityLegend : 0;
+    g_online15mSec = ClampF(s.online15mSec, 0.0f, 900.0f);
+    g_online1hSec = ClampF(s.online1hSec, 0.0f, 3600.0f);
+    g_challengerActive = (s.challengerActive != 0);
+    g_challengerWins = (s.challengerWins >= 0 && s.challengerWins < 5) ? s.challengerWins : 0;
+    g_challengerCurDiff = (s.challengerCurDiff == (int32_t)BOT_HARD) ? BOT_HARD : BOT_IMPOSSIBLE;
+    return true;
+}
+
+static int CountUnlockedBalls(void)
+{
+    int cnt = 0;
+    for (int i = 0; i < TYPE_COUNT; i++) {
+        if (g_unlocked[i]) cnt++;
+    }
+    return cnt;
 }
 
 static void SaveProgress(void)
 {
-    g_unlocked[TYPE_BURST] = true;
     char paths[3][512];
     int pathCount = 0;
     BuildSaveCandidatePaths(paths, &pathCount);
@@ -7748,12 +9752,10 @@ static void LoadProgress(void)
         }
     }
 
-    // Default new-player state: ONLY BURST unlocked + 15 starter tickets
+    // Default new-player state: NO free balls unlocked + 15 starter tickets (beginner gacha tutorial)
     memset(g_unlocked, 0, sizeof(g_unlocked));
     memset(g_ballCopies, 0, sizeof(g_ballCopies));
     memset(g_ballUpgradeLv, 0, sizeof(g_ballUpgradeLv));
-    g_unlocked[TYPE_BURST] = true;
-    g_ballCopies[TYPE_BURST] = 1;
     g_playerTickets = 15;
     memset(g_botWinStreak, 0, sizeof(g_botWinStreak));
     g_botTotalWins = 0;
@@ -7926,12 +9928,15 @@ static void DrawBallPreviewIcon(BallType type, Vector2 center, Color baseCol)
     dummy.bow.aimAngle = 0.0f;
     dummy.ninja.currentKunai = 3;
     dummy.ninja.targetMaxKunai = 3;
-    dummy.ninja.aimAngle = -PI * 0.5f;
+    dummy.ninja.aimAngle = 0.0f;
     dummy.cactus.ammo = CACTUS_MAX_AMMO;
     dummy.gun.aimAngle = 0.0f;
     dummy.gun.barrelSpin = (float)GetTime() * 2.5f;
     dummy.dice.rolling = false;
 
+    if (type == TYPE_BURST) {
+        DrawBurstFireRim(&dummy);
+    }
     if (type == TYPE_ICE) {
         DrawCircleV(center, BASE_RADIUS + 5.0f, Fade(SKYBLUE, 0.22f));
     }
@@ -7941,18 +9946,27 @@ static void DrawBallPreviewIcon(BallType type, Vector2 center, Color baseCol)
     if (type == TYPE_KNIGHT || type == TYPE_KING) {
         DrawFlutteringRoyalCape(center, (float)BASE_RADIUS, type == TYPE_KNIGHT);
     }
+    if (type == TYPE_PSYCHIC) {
+        DrawPsychicFlutteringTails(center, (float)BASE_RADIUS);
+    }
 
     DrawCircleV(center, (float)BASE_RADIUS, baseCol);
     DrawRing(center, (float)BASE_RADIUS - 1.5f, (float)BASE_RADIUS + 0.5f, 0.0f, 360.0f, 36, BLACK);
 
     switch (type) {
         case TYPE_BURST:      DrawBurstCenterFlame(center); break;
-        case TYPE_HARPOON:    DrawHarpoonCenterEmblem(&dummy, NULL); break;
+        case TYPE_HARPOON:    DrawHarpoonCenterEmblem(&dummy); break;
         case TYPE_VERITY:     DrawVerityFace(&dummy); break;
         case TYPE_DEVIL:      DrawDevilFangs(&dummy, NULL); break;
         case TYPE_ICE:        DrawIce3DCube(center); break;
-        case TYPE_TRIDENT:    DrawTridentCrown(&dummy); break;
-        case TYPE_ELECTRIC:   DrawBolt(center); break;
+        case TYPE_TRIDENT:
+            DrawTridentCrown(&dummy);
+            DrawTrident((Vector2){ center.x + BASE_RADIUS + 6.0f, center.y + 2.0f }, -PI * 0.5f, YELLOW);
+            break;
+        case TYPE_ELECTRIC:
+            DrawBolt(center);
+            DrawElectricRim(center, (float)BASE_RADIUS, 12, (Color){ 60, 140, 255, 255 });
+            break;
         case TYPE_WITCH:      DrawWitchHat(&dummy); break;
         case TYPE_BOW:        DrawBowEmblem(&dummy); break;
         case TYPE_REFORGE:    DrawReforgeHammer(center); break;
@@ -7961,7 +9975,10 @@ static void DrawBallPreviewIcon(BallType type, Vector2 center, Color baseCol)
         case TYPE_LASER:      DrawLaserCore(&dummy); break;
         case TYPE_CACTUS:     DrawCactusDetails(&dummy); break;
         case TYPE_WIND:       DrawSwirlVortex(center, (float)BASE_RADIUS, (float)GetTime() * 3.5f); break;
-        case TYPE_CHESS:      DrawChessBallPattern(&dummy); break;
+        case TYPE_CHESS:
+            DrawChessBallPattern(&dummy);
+            DrawChessPreviewCarousel(center, (float)BASE_RADIUS);
+            break;
         case TYPE_GUN:        DrawGunGatling(&dummy); break;
         case TYPE_DICE:       DrawDice3DEmblem(&dummy); break;
         case TYPE_GAMBLER:    DrawGamblerDetails(&dummy); break;
@@ -7982,6 +9999,10 @@ static void DrawBallPreviewIcon(BallType type, Vector2 center, Color baseCol)
         case TYPE_CATAPULT:   DrawCatapultDetails(&dummy); break;
         case TYPE_ARCHER:     DrawArcherDetails(&dummy); break;
         case TYPE_SQUIRE:     DrawSquireDetails(&dummy); break;
+        case TYPE_FLINTLOCK:  DrawFlintlockDetails(&dummy); break;
+        case TYPE_BOMB:       DrawBombDetails(&dummy); break;
+        case TYPE_CANNON:     DrawCannonDetails(&dummy); break;
+        case TYPE_CAPTAIN:    DrawCaptainDetails(&dummy); break;
         default: break;
     }
 }
@@ -8017,7 +10038,13 @@ int main(void)
     int lastStreakBonusPct = 0;
     bool lastFirst15Bonus = false;
 
-    // Gacha wheel animation state
+    // Gacha wheel animation & multi-roll summary state
+    typedef struct {
+        BallType type;
+        int count;
+        bool wasNew;
+    } GachaSummaryItem;
+
     bool gachaRolling = false;
     float gachaTimer = 0.0f;
     float gachaStepTimer = 0.0f;
@@ -8025,6 +10052,11 @@ int main(void)
     BallType gachaResult  = TYPE_BURST;
     bool gachaHasResult   = false;
     bool gachaWasNew      = false;
+    int gachaRollMode     = 1; // 1, 10, or 100
+    GachaSummaryItem gachaSummary[TYPE_COUNT];
+    int gachaSummaryCount = 0;
+    int gachaSummaryPage  = 0;
+    int gachaTotalNew     = 0;
 
     static const char* const names[TYPE_COUNT] = {
         "BURST", "HARPOON", "VERITY", "DEVIL", "ICE",
@@ -8033,7 +10065,8 @@ int main(void)
         "CHESS", "GUN", "DICE", "GAMBLER", "PSYCHIC",
         "CHARGE", "SHACKLESS", "JUDGEMENT", "TRAIN",
         "WEB", "RANGE", "KNIGHT", "CAVALRY", "EXECUTER", "KING",
-        "CATAPULT", "ARCHER", "SQUIRE"
+        "CATAPULT", "ARCHER", "SQUIRE",
+        "FLINTLOCK", "BOMB", "CANNON", "CAPTAIN"
     };
     static const Color btnColors[TYPE_COUNT] = {
         ORANGE, SKYBLUE, YELLOW, COL_DEVIL, COL_ICE,
@@ -8042,7 +10075,8 @@ int main(void)
         COL_CHESS, COL_GUN, COL_DICE, COL_GAMBLER, COL_PSYCHIC,
         COL_CHARGE, COL_UNSHACKLED, COL_JUDGEMENT, COL_TRAIN,
         COL_SPIDER, COL_RANGE, COL_KNIGHT, COL_CAVALRY, COL_EXECUTER, COL_KING,
-        COL_CATAPULT, COL_ARCHER, COL_SQUIRE
+        COL_CATAPULT, COL_ARCHER, COL_SQUIRE,
+        COL_FLINTLOCK, COL_BOMB, COL_CANNON, COL_CAPTAIN
     };
 
     // Sort all 20 balls in ascending order of rarity (COMMON -> UNCOMMON -> RARE -> MYSTIC -> LEGENDARY)
@@ -8063,24 +10097,28 @@ int main(void)
     const float cardGapX = 36.0f;
     const float cardGapY = 18.0f;
     const float gridStartX = (SCREEN_W - (selectCols * cardSize + (selectCols - 1) * cardGapX)) * 0.5f;
-    const Rectangle selectViewport = { 45.0f, 92.0f, SCREEN_W - 90.0f, 344.0f };
+    const Rectangle selectViewport = { 45.0f, 92.0f, SCREEN_W - 90.0f, 326.0f };
     const float totalGridH = selectRows * cardSize + (selectRows - 1) * cardGapY + 16.0f;
     const float maxSelectScroll = fmaxf(0.0f, totalGridH - selectViewport.height);
     float selectScrollY = 0.0f;
     float invScrollY = 0.0f;
     bool draggingScrollbar = false;
 
-    const Rectangle btnModeSandbox   = { SCREEN_W / 2.0f - 255.0f, 142.0f, 155.0f, 56.0f };
-    const Rectangle btnModeVsBot     = { SCREEN_W / 2.0f - 77.5f,  142.0f, 155.0f, 56.0f };
-    const Rectangle btnModeChall     = { SCREEN_W / 2.0f + 100.0f, 142.0f, 155.0f, 56.0f };
-    const Rectangle btnOpenGacha     = { SCREEN_W / 2.0f - 170.0f, 218.0f, 155.0f, 56.0f };
-    const Rectangle btnOpenInv       = { SCREEN_W / 2.0f + 15.0f,  218.0f, 155.0f, 56.0f };
-    const Rectangle btnSandbox1v1    = { SCREEN_W / 2.0f - 185.0f, 200.0f, 170.0f, 64.0f };
-    const Rectangle btnSandbox2v2    = { SCREEN_W / 2.0f + 15.0f,  200.0f, 170.0f, 64.0f };
-    const Rectangle btnBot1v1        = { SCREEN_W / 2.0f - 185.0f, 325.0f, 170.0f, 56.0f };
-    const Rectangle btnBot2v2        = { SCREEN_W / 2.0f + 15.0f,  325.0f, 170.0f, 56.0f };
-    const Rectangle btnChallAction   = { SCREEN_W / 2.0f - 140.0f, 285.0f, 280.0f, 58.0f };
-    const Rectangle btnRollNow       = { SCREEN_W / 2.0f - 100.0f, 345.0f, 200.0f, 52.0f };
+    const Rectangle btnModeSandbox   = { 99.0f,  144.0f, 186.0f, 64.0f };
+    const Rectangle btnModeVsBot     = { 307.0f, 144.0f, 186.0f, 64.0f };
+    const Rectangle btnModeChall     = { 515.0f, 144.0f, 186.0f, 64.0f };
+    const Rectangle btnOpenGacha     = { 176.0f, 230.0f, 210.0f, 60.0f };
+    const Rectangle btnOpenInv       = { 414.0f, 230.0f, 210.0f, 60.0f };
+    const Rectangle btnSandbox1v1    = { 172.0f, 186.0f, 210.0f, 96.0f };
+    const Rectangle btnSandbox2v2    = { 418.0f, 186.0f, 210.0f, 96.0f };
+    const Rectangle btnBot1v1        = { 184.0f, 308.0f, 200.0f, 58.0f };
+    const Rectangle btnBot2v2        = { 416.0f, 308.0f, 200.0f, 58.0f };
+    const Rectangle btnChallAction   = { SCREEN_W / 2.0f - 150.0f, 286.0f, 300.0f, 62.0f };
+    const Rectangle btnRoll1         = { 65.0f,  356.0f, 200.0f, 46.0f };
+    const Rectangle btnRoll10        = { 285.0f, 356.0f, 230.0f, 46.0f };
+    const Rectangle btnRoll100       = { 535.0f, 356.0f, 200.0f, 46.0f };
+    const Rectangle btnGachaPrev     = { 30.0f,  68.0f,  74.0f,  22.0f };
+    const Rectangle btnGachaNext     = { 696.0f, 68.0f,  74.0f,  22.0f };
     const Rectangle btnTopRight      = { SCREEN_W - 115, 10, 100, 30 };
     const Rectangle btnPause         = { SCREEN_W - 225, 10, 100, 30 };
     const Rectangle btnSurrYes       = { SCREEN_W / 2.0f - 120.0f, SCREEN_H / 2.0f + 12.0f, 105.0f, 40.0f };
@@ -8111,6 +10149,7 @@ int main(void)
         if (onlineRewardTriggered) SaveProgress();
 
         bool inBotMatch = (state == COUNTDOWN || state == PLAYING) && (isVsBot || isChallenger);
+        bool needStarterGacha = (CountUnlockedBalls() == 0 && g_playerTickets > 0);
 
         // Surrender confirmation modal handling during bot matches
         if (surrenderConfirm && inBotMatch) {
@@ -8142,7 +10181,8 @@ int main(void)
             if (IsKeyPressed(KEY_ESCAPE)) surrenderConfirm = false;
         } else {
             // Top-right button: SURRENDER in bot matches, RESET in sandbox, RETURN in menus/game over
-            if (state != MENU_MODE &&
+            bool blockReturnForTutorial = (needStarterGacha && state == MENU_GACHA);
+            if (state != MENU_MODE && !blockReturnForTutorial &&
                 ((clicked && CheckCollisionPointRec(mousePos, btnTopRight)) || (!inBotMatch && IsKeyPressed(KEY_R)))) {
                 if (inBotMatch) {
                     surrenderConfirm = true;
@@ -8167,7 +10207,17 @@ int main(void)
         if (state == MENU_MODE)
         {
             if (clicked) {
-                if (CheckCollisionPointRec(mousePos, btnModeSandbox)) {
+                if (needStarterGacha) {
+                    // Beginner tutorial: require opening Gacha first to spend starter tickets
+                    if (CheckCollisionPointRec(mousePos, btnOpenGacha)) {
+                        gachaRolling = false;
+                        gachaHasResult = false;
+                        gachaRollMode = 1;
+                        gachaSummaryCount = 0;
+                        gachaSummaryPage = 0;
+                        state = MENU_GACHA;
+                    }
+                } else if (CheckCollisionPointRec(mousePos, btnModeSandbox)) {
                     isVsBot = false;
                     isChallenger = false;
                     vsBotDraftActive = false;
@@ -8180,6 +10230,9 @@ int main(void)
                 } else if (CheckCollisionPointRec(mousePos, btnOpenGacha)) {
                     gachaRolling = false;
                     gachaHasResult = false;
+                    gachaRollMode = 1;
+                    gachaSummaryCount = 0;
+                    gachaSummaryPage = 0;
                     state = MENU_GACHA;
                 } else if (CheckCollisionPointRec(mousePos, btnOpenInv)) {
                     invScrollY = 0.0f;
@@ -8213,7 +10266,7 @@ int main(void)
         {
             if (clicked) {
                 for (int d = 0; d < 4; d++) {
-                    Rectangle diffCard = { 34.0f + d * 186.0f, 118.0f, 174.0f, 172.0f };
+                    Rectangle diffCard = { 27.0f + d * 190.0f, 100.0f, 176.0f, 182.0f };
                     if (CheckCollisionPointRec(mousePos, diffCard)) {
                         selectedBotDiff = (BotDifficulty)d;
                     }
@@ -8305,8 +10358,9 @@ int main(void)
                 gachaTimer -= dt;
                 gachaStepTimer -= dt;
                 if (gachaStepTimer <= 0.0f) {
-                    float progress = 1.0f - ClampF(gachaTimer / 1.8f, 0.0f, 1.0f);
-                    gachaStepTimer = 0.04f + progress * 0.16f;
+                    float totalDur = (gachaRollMode > 1) ? 1.15f : 1.6f;
+                    float progress = 1.0f - ClampF(gachaTimer / totalDur, 0.0f, 1.0f);
+                    gachaStepTimer = 0.035f + progress * 0.14f;
                     gachaPreview = (BallType)((gachaPreview + GetRandomValue(1, TYPE_COUNT - 1)) % TYPE_COUNT);
                 }
                 if (gachaTimer <= 0.0f) {
@@ -8314,18 +10368,89 @@ int main(void)
                     gachaHasResult = true;
                     gachaPreview = gachaResult;
                 }
-            } else if (clicked && CheckCollisionPointRec(mousePos, btnRollNow)) {
-                if (g_playerTickets > 0) {
-                    g_playerTickets--;
-                    gachaResult = RollGachaBall();
-                    gachaWasNew = !g_unlocked[gachaResult];
-                    g_unlocked[gachaResult] = true;
-                    g_ballCopies[gachaResult]++;
+            } else if (clicked) {
+                int rollCount = 0;
+                if (CheckCollisionPointRec(mousePos, btnRoll1) && g_playerTickets >= 1) {
+                    rollCount = 1;
+                } else if (CheckCollisionPointRec(mousePos, btnRoll10) && g_playerTickets >= 10) {
+                    rollCount = 10;
+                } else if (CheckCollisionPointRec(mousePos, btnRoll100) && g_playerTickets >= 100) {
+                    rollCount = 100;
+                } else if (gachaHasResult && gachaRollMode > 1 && gachaSummaryCount > 10) {
+                    int totalPages = (gachaSummaryCount + 9) / 10;
+                    if (CheckCollisionPointRec(mousePos, btnGachaPrev) && gachaSummaryPage > 0) {
+                        gachaSummaryPage--;
+                    } else if (CheckCollisionPointRec(mousePos, btnGachaNext) && gachaSummaryPage < totalPages - 1) {
+                        gachaSummaryPage++;
+                    }
+                }
+
+                if (rollCount > 0) {
+                    g_playerTickets -= rollCount;
+                    gachaRollMode = rollCount;
+                    gachaSummaryCount = 0;
+                    gachaSummaryPage = 0;
+                    gachaTotalNew = 0;
+
+                    if (rollCount == 1) {
+                        gachaResult = RollGachaBall();
+                        gachaWasNew = !g_unlocked[gachaResult];
+                        g_unlocked[gachaResult] = true;
+                        g_ballCopies[gachaResult]++;
+                        gachaSummary[0].type = gachaResult;
+                        gachaSummary[0].count = 1;
+                        gachaSummary[0].wasNew = gachaWasNew;
+                        gachaSummaryCount = 1;
+                        gachaTotalNew = gachaWasNew ? 1 : 0;
+                        gachaTimer = 1.6f;
+                    } else {
+                        int counts[TYPE_COUNT];
+                        bool newlyUnlocked[TYPE_COUNT];
+                        memset(counts, 0, sizeof(counts));
+                        memset(newlyUnlocked, 0, sizeof(newlyUnlocked));
+
+                        for (int k = 0; k < rollCount; k++) {
+                            BallType pulled = RollGachaBall();
+                            if (!g_unlocked[pulled]) {
+                                newlyUnlocked[pulled] = true;
+                                g_unlocked[pulled] = true;
+                            }
+                            g_ballCopies[pulled]++;
+                            counts[pulled]++;
+                        }
+
+                        for (int i = 0; i < TYPE_COUNT; i++) {
+                            if (counts[i] > 0) {
+                                gachaSummary[gachaSummaryCount].type = (BallType)i;
+                                gachaSummary[gachaSummaryCount].count = counts[i];
+                                gachaSummary[gachaSummaryCount].wasNew = newlyUnlocked[i];
+                                if (newlyUnlocked[i]) gachaTotalNew++;
+                                gachaSummaryCount++;
+                            }
+                        }
+                        // Sort grouped results by Rarity descending, then by count descending
+                        for (int a = 0; a < gachaSummaryCount - 1; a++) {
+                            for (int bIdx = a + 1; bIdx < gachaSummaryCount; bIdx++) {
+                                BallRarity rA = g_ballRarity[gachaSummary[a].type];
+                                BallRarity rB = g_ballRarity[gachaSummary[bIdx].type];
+                                bool swap = (rB > rA) ||
+                                            (rB == rA && gachaSummary[bIdx].count > gachaSummary[a].count);
+                                if (swap) {
+                                    GachaSummaryItem tmp = gachaSummary[a];
+                                    gachaSummary[a] = gachaSummary[bIdx];
+                                    gachaSummary[bIdx] = tmp;
+                                }
+                            }
+                        }
+                        gachaResult = gachaSummary[0].type;
+                        gachaWasNew = gachaSummary[0].wasNew;
+                        gachaTimer = 1.15f;
+                    }
+
                     SaveProgress();
                     gachaRolling = true;
                     gachaHasResult = false;
-                    gachaTimer = 1.8f;
-                    gachaStepTimer = 0.04f;
+                    gachaStepTimer = 0.035f;
                 }
             }
         }
@@ -8469,12 +10594,36 @@ int main(void)
                 if (b->freezeImmune > 0.0f) b->freezeImmune -= dt;
                 if (b->slowYTimer > 0.0f)   b->slowYTimer -= dt;
                 if (b->slowPTimer > 0.0f)   b->slowPTimer -= dt;
+                if (b->weaknessTimer > 0.0f) {
+                    b->weaknessTimer -= dt;
+                    if (b->weaknessTimer < 0.0f) b->weaknessTimer = 0.0f;
+                    if (GetRandomValue(0, 99) < 35) {
+                        float a = (float)GetRandomValue(0, 359) * DEG2RAD;
+                        float rad = (float)b->radius + (float)GetRandomValue(-2, 7);
+                        Vector2 p = { b->pos.x + cosf(a) * rad, b->pos.y + sinf(a) * rad };
+                        Vector2 v = { (float)GetRandomValue(-4, 4) * 0.06f, -0.55f - (float)GetRandomValue(0, 6) * 0.05f };
+                        SpawnParticle(p, v, 0.55f, 2.2f + (float)GetRandomValue(0, 14) * 0.1f,
+                                      (Color){ 20, 20, 28, 255 }, -0.02f, false);
+                    }
+                }
+                if (b->strengthTimer > 0.0f) {
+                    b->strengthTimer -= dt;
+                    if (b->strengthTimer < 0.0f) b->strengthTimer = 0.0f;
+                    if (GetRandomValue(0, 99) < 35) {
+                        float a = (float)GetRandomValue(0, 359) * DEG2RAD;
+                        float rad = (float)b->radius + (float)GetRandomValue(-2, 7);
+                        Vector2 p = { b->pos.x + cosf(a) * rad, b->pos.y + sinf(a) * rad };
+                        Vector2 v = { (float)GetRandomValue(-4, 4) * 0.06f, -0.55f - (float)GetRandomValue(0, 6) * 0.05f };
+                        SpawnParticle(p, v, 0.55f, 2.2f + (float)GetRandomValue(0, 14) * 0.1f,
+                                      (Color){ 235, 35, 45, 255 }, -0.02f, false);
+                    }
+                }
                 if (b->poisonTicks > 0) {
                     b->poisonTick -= dt;
                     if (b->poisonTick <= 0.0f) {
-                        b->poisonTick += 0.6f;
+                        b->poisonTick += 0.5f;
                         b->poisonTicks--;
-                        TakeDamageScaled(b, 1, b->poisonDmgMult);
+                        TakeDamageScaled(b, 2, b->poisonDmgMult);
                         if (!IsAlive(b)) continue;
                     }
                 }
@@ -8512,10 +10661,14 @@ int main(void)
                         b->judgement.immuneTimer -= dt;
                     } else if (b->type == TYPE_KNIGHT) {
                         UpdateKnight(b, dt);
+                    } else if (b->type == TYPE_CAVALRY && b->cavalry.state == 2) {
+                        UpdateCavalry(b, dt);
                     } else if (b->type == TYPE_CATAPULT && b->catapult.boulderActive) {
                         UpdateCatapult(b, dt);
                     } else if (b->type == TYPE_ARCHER && b->archer.arrowActive) {
                         UpdateArcher(b, dt);
+                    } else if (b->type == TYPE_BOMB && (b->bomb.airActive || b->bomb.dropActive)) {
+                        UpdateBomb(b, dt);
                     }
                 }
 
@@ -8632,6 +10785,10 @@ int main(void)
                     case TYPE_KING:       UpdateKing(b, dt); break;
                     case TYPE_CATAPULT:   UpdateCatapult(b, dt); break;
                     case TYPE_ARCHER:     UpdateArcher(b, dt); break;
+                    case TYPE_FLINTLOCK:  UpdateFlintlock(b, dt); break;
+                    case TYPE_BOMB:       UpdateBomb(b, dt); break;
+                    case TYPE_CANNON:     UpdateCannon(b, dt); break;
+                    case TYPE_CAPTAIN:    UpdateCaptain(b, dt); break;
                     case TYPE_ELECTRIC:
                         if (!b->charged && (b->chargeTimer -= dt) <= 0.0f) b->charged = true;
                         break;
@@ -8776,19 +10933,20 @@ int main(void)
             // Top-left ticket & online gift bar in menus
             if (state == MENU_MODE || state == MENU_SANDBOX || state == MENU_BOT_MODE || state == MENU_CHALLENGER ||
                 state == MENU_SELECT || state == MENU_GACHA || state == MENU_INVENTORY) {
-                Rectangle tBox = { 15.0f, 10.0f, 160.0f, 30.0f };
+                Rectangle tBox = { 15.0f, 10.0f, 175.0f, 30.0f };
                 DrawRectangleRec(tBox, GOLD);
                 DrawRectangleLinesEx(tBox, 1.5f, BLACK);
-                DrawText(TextFormat("TICKETS: %d", g_playerTickets), 25, 17, 15, BLACK);
+                const char* tTxt = TextFormat("TICKETS: %d", g_playerTickets);
+                DrawText(tTxt, (int)(tBox.x + (tBox.width - MeasureText(tTxt, 15)) * 0.5f), 18, 15, BLACK);
 
                 int rem15 = (int)ceilf(fmaxf(0.0f, 900.0f - g_online15mSec));
                 int rem1h = (int)ceilf(fmaxf(0.0f, 3600.0f - g_online1hSec));
                 DrawText(TextFormat("15m(+50): %02d:%02d  |  1h(+300): %02d:%02d",
                                     rem15 / 60, rem15 % 60, rem1h / 60, rem1h % 60),
-                         188, 18, 14, DARKGRAY);
+                         202, 18, 14, DARKGRAY);
             }
 
-            if (state != MENU_MODE) {
+            if (state != MENU_MODE && !(needStarterGacha && state == MENU_GACHA)) {
                 const char* topBtnTxt = inBotMatch
                     ? "SURRENDER"
                     : ((state == MENU_SANDBOX || state == MENU_BOT_MODE || state == MENU_CHALLENGER ||
@@ -8827,114 +10985,159 @@ int main(void)
 
             if (state == MENU_MODE)
             {
-                DrawCenteredText("BALLvBALL - SELECT MODE", 76, 26, BLACK);
+                DrawCenteredText("BALLvBALL", 62, 34, BLACK);
+                DrawCenteredText("SELECT GAME MODE", 102, 15, DARKGRAY);
 
                 DrawRectangleRec(btnModeSandbox, SKYBLUE);
                 DrawRectangleLinesEx(btnModeSandbox, 2.0f, BLACK);
                 DrawText("SANDBOX", (int)(btnModeSandbox.x + (btnModeSandbox.width - MeasureText("SANDBOX", 22)) * 0.5f),
-                         (int)btnModeSandbox.y + 16, 22, BLACK);
+                         (int)btnModeSandbox.y + 21, 22, BLACK);
 
                 DrawRectangleRec(btnModeVsBot, (Color){ 220, 45, 75, 255 });
                 DrawRectangleLinesEx(btnModeVsBot, 2.0f, BLACK);
                 DrawText("VS BOT", (int)(btnModeVsBot.x + (btnModeVsBot.width - MeasureText("VS BOT", 22)) * 0.5f),
-                         (int)btnModeVsBot.y + 16, 22, WHITE);
+                         (int)btnModeVsBot.y + 21, 22, WHITE);
 
                 DrawRectangleRec(btnModeChall, (Color){ 165, 35, 35, 255 });
                 DrawRectangleLinesEx(btnModeChall, 2.0f, BLACK);
-                DrawText("CHALLENGER", (int)(btnModeChall.x + (btnModeChall.width - MeasureText("CHALLENGER", 19)) * 0.5f),
-                         (int)btnModeChall.y + 18, 19, GOLD);
+                DrawText("CHALLENGER", (int)(btnModeChall.x + (btnModeChall.width - MeasureText("CHALLENGER", 20)) * 0.5f),
+                         (int)btnModeChall.y + 22, 20, GOLD);
 
                 DrawRectangleRec(btnOpenGacha, (Color){ 145, 55, 205, 255 });
                 DrawRectangleLinesEx(btnOpenGacha, 2.0f, BLACK);
                 DrawText("GACHA", (int)(btnOpenGacha.x + (btnOpenGacha.width - MeasureText("GACHA", 22)) * 0.5f),
-                         (int)btnOpenGacha.y + 16, 22, WHITE);
+                         (int)btnOpenGacha.y + 19, 22, WHITE);
 
                 DrawRectangleRec(btnOpenInv, (Color){ 45, 145, 95, 255 });
                 DrawRectangleLinesEx(btnOpenInv, 2.0f, BLACK);
-                DrawText("INVENTORY", (int)(btnOpenInv.x + (btnOpenInv.width - MeasureText("INVENTORY", 20)) * 0.5f),
-                         (int)btnOpenInv.y + 17, 20, WHITE);
+                DrawText("INVENTORY", (int)(btnOpenInv.x + (btnOpenInv.width - MeasureText("INVENTORY", 21)) * 0.5f),
+                         (int)btnOpenInv.y + 19, 21, WHITE);
 
-                DrawCenteredText(TextFormat("FIRST-15 BOT WINS BONUS: %d / 15 (+20 TICKETS/WIN)",
-                                            (g_botTotalWins < 15 ? g_botTotalWins : 15)),
-                                 315, 15, DARKGRAY);
+                if (needStarterGacha) {
+                    // Dim locked buttons while beginner tutorial requires rolling Gacha first
+                    DrawRectangleRec(btnModeSandbox, Fade(GRAY, 0.58f));
+                    DrawRectangleRec(btnModeVsBot,   Fade(GRAY, 0.58f));
+                    DrawRectangleRec(btnModeChall,   Fade(GRAY, 0.58f));
+                    DrawRectangleRec(btnOpenInv,     Fade(GRAY, 0.58f));
+
+                    // Pulsing golden spotlight & animated downward pointer on GACHA button
+                    float pulse = 0.5f + 0.5f * sinf((float)GetTime() * 6.0f);
+                    Rectangle glowR = {
+                        btnOpenGacha.x - 4.0f - pulse * 2.0f,
+                        btnOpenGacha.y - 4.0f - pulse * 2.0f,
+                        btnOpenGacha.width + 8.0f + pulse * 4.0f,
+                        btnOpenGacha.height + 8.0f + pulse * 4.0f
+                    };
+                    DrawRectangleLinesEx(glowR, 3.5f, Fade(GOLD, 0.65f + 0.35f * pulse));
+
+                    float arrowY = btnOpenGacha.y - 12.0f - pulse * 6.0f;
+                    float arrowX = btnOpenGacha.x + btnOpenGacha.width * 0.5f;
+                    DrawTri((Vector2){ arrowX - 10.0f, arrowY - 12.0f },
+                            (Vector2){ arrowX + 10.0f, arrowY - 12.0f },
+                            (Vector2){ arrowX, arrowY }, GOLD);
+                    DrawLineEx((Vector2){ arrowX - 10.0f, arrowY - 12.0f }, (Vector2){ arrowX, arrowY }, 2.0f, BLACK);
+                    DrawLineEx((Vector2){ arrowX + 10.0f, arrowY - 12.0f }, (Vector2){ arrowX, arrowY }, 2.0f, BLACK);
+
+                    Rectangle tutBox = { 70.0f, 314.0f, SCREEN_W - 140.0f, 54.0f };
+                    DrawRectangleRec(tutBox, (Color){ 255, 248, 210, 255 });
+                    DrawRectangleLinesEx(tutBox, 2.5f, (Color){ 215, 145, 20, 255 });
+                    DrawCenteredText("WELCOME! YOU HAVE 15 FREE STARTER TICKETS!", 323, 16, (Color){ 165, 65, 15, 255 });
+                    DrawCenteredText("CLICK [GACHA] ABOVE TO ROLL YOUR FIRST BALL BEFORE PLAYING!", 344, 14, BLACK);
+                } else {
+                    Rectangle bonusBox = { SCREEN_W / 2.0f - 255.0f, 326.0f, 510.0f, 38.0f };
+                    DrawRectangleRec(bonusBox, Fade(RAYWHITE, 0.85f));
+                    DrawRectangleLinesEx(bonusBox, 1.5f, GRAY);
+                    DrawCenteredText(TextFormat("FIRST-15 BOT WINS BONUS: %d / 15  (+20 TICKETS / WIN)",
+                                                (g_botTotalWins < 15 ? g_botTotalWins : 15)),
+                                     338, 15, BLACK);
+                    DrawCenteredText("CONTROLS: P = PAUSE   |   R = RETURN / RESET", 386, 13, DARKGRAY);
+                }
             }
             else if (state == MENU_SANDBOX)
             {
-                DrawCenteredText("SANDBOX - SELECT TEAM SIZE", 110, 26, BLACK);
-                DrawCenteredText("ALL BALLS UNLOCKED FOR TESTING (0 TICKETS)", 148, 15, (Color){ 40, 95, 165, 255 });
+                DrawCenteredText("SANDBOX MODE", 90, 30, BLACK);
+                DrawCenteredText("ALL BALLS UNLOCKED FOR FREE TESTING (0 TICKETS)", 130, 15, (Color){ 40, 95, 165, 255 });
 
                 DrawRectangleRec(btnSandbox1v1, SKYBLUE);
                 DrawRectangleLinesEx(btnSandbox1v1, 2.0f, BLACK);
-                DrawText("1 VS 1", (int)(btnSandbox1v1.x + (btnSandbox1v1.width - MeasureText("1 VS 1", 24)) * 0.5f),
-                         (int)btnSandbox1v1.y + 20, 24, BLACK);
+                DrawText("1 VS 1", (int)(btnSandbox1v1.x + (btnSandbox1v1.width - MeasureText("1 VS 1", 26)) * 0.5f),
+                         (int)btnSandbox1v1.y + 24, 26, BLACK);
+                DrawText("2 BALLS", (int)(btnSandbox1v1.x + (btnSandbox1v1.width - MeasureText("2 BALLS", 13)) * 0.5f),
+                         (int)btnSandbox1v1.y + 58, 13, DARKGRAY);
 
                 DrawRectangleRec(btnSandbox2v2, ORANGE);
                 DrawRectangleLinesEx(btnSandbox2v2, 2.0f, BLACK);
-                DrawText("2 VS 2", (int)(btnSandbox2v2.x + (btnSandbox2v2.width - MeasureText("2 VS 2", 24)) * 0.5f),
-                         (int)btnSandbox2v2.y + 20, 24, WHITE);
+                DrawText("2 VS 2", (int)(btnSandbox2v2.x + (btnSandbox2v2.width - MeasureText("2 VS 2", 26)) * 0.5f),
+                         (int)btnSandbox2v2.y + 24, 26, WHITE);
+                DrawText("4 BALLS", (int)(btnSandbox2v2.x + (btnSandbox2v2.width - MeasureText("4 BALLS", 13)) * 0.5f),
+                         (int)btnSandbox2v2.y + 58, 13, RAYWHITE);
+
+                DrawCenteredText("TIMER COUNTS UP FROM 00:00   |   RESET ANYTIME", 320, 14, DARKGRAY);
             }
             else if (state == MENU_BOT_MODE)
             {
                 static const char* const diffNames[4] = { "EASY", "MEDIUM", "HARD", "IMPOSSIBLE" };
-                static const char* const diffRew[4]   = { "W:+5  L:+2", "W:+20 L:+3", "W:+40 L:0", "W:+80 L:0" };
-                static const char* const diffBuffs[4] = { "100 HP | BASE", "100 HP | BASE", "110 HP +15%DMG +5%HOM", "120 HP +25%DMG +10%HOM" };
+                static const char* const diffRew[4]   = { "WIN: +5  |  LOSE: +2", "WIN: +20 |  LOSE: +3", "WIN: +40 |  LOSE: 0", "WIN: +80 |  LOSE: 0" };
+                static const char* const diffBuff1[4] = { "100 HP", "100 HP", "110 HP | +15% DMG", "120 HP | +25% DMG" };
+                static const char* const diffBuff2[4] = { "BASE STATS", "BASE STATS", "+5% HOMING", "+10% HOMING" };
                 static const Color diffCols[4] = {
                     { 75, 185, 95, 255 }, { 70, 155, 225, 255 }, { 225, 125, 40, 255 }, { 195, 35, 55, 255 }
                 };
 
-                DrawCenteredText("VS BOT - SELECT DIFFICULTY & TEAM SIZE", 68, 22, BLACK);
+                DrawCenteredText("VS BOT - SELECT DIFFICULTY & TEAM", 58, 24, BLACK);
                 for (int d = 0; d < 4; d++) {
-                    Rectangle dc = { 34.0f + d * 186.0f, 118.0f, 174.0f, 172.0f };
+                    Rectangle dc = { 27.0f + d * 190.0f, 100.0f, 176.0f, 182.0f };
                     bool sel = ((int)selectedBotDiff == d);
                     DrawRectangleRec(dc, sel ? (Color){ 255, 252, 232, 255 } : RAYWHITE);
-                    DrawRectangle((int)dc.x, (int)dc.y, (int)dc.width, 30, diffCols[d]);
-                    DrawText(diffNames[d], (int)(dc.x + (dc.width - MeasureText(diffNames[d], 17)) * 0.5f), (int)dc.y + 6, 17, WHITE);
-                    DrawText(diffRew[d], (int)(dc.x + (dc.width - MeasureText(diffRew[d], 14)) * 0.5f), (int)dc.y + 48, 14, BLACK);
-                    DrawText(diffBuffs[d], (int)(dc.x + (dc.width - MeasureText(diffBuffs[d], 10)) * 0.5f), (int)dc.y + 78, 10, (d >= 2) ? MAROON : DARKGRAY);
+                    DrawRectangle((int)dc.x, (int)dc.y, (int)dc.width, 34, diffCols[d]);
+                    DrawText(diffNames[d], (int)(dc.x + (dc.width - MeasureText(diffNames[d], 18)) * 0.5f), (int)dc.y + 8, 18, WHITE);
+                    DrawText(diffRew[d], (int)(dc.x + (dc.width - MeasureText(diffRew[d], 13)) * 0.5f), (int)dc.y + 48, 13, BLACK);
+                    DrawText(diffBuff1[d], (int)(dc.x + (dc.width - MeasureText(diffBuff1[d], 12)) * 0.5f), (int)dc.y + 78, 12, (d >= 2) ? MAROON : DARKGRAY);
+                    DrawText(diffBuff2[d], (int)(dc.x + (dc.width - MeasureText(diffBuff2[d], 12)) * 0.5f), (int)dc.y + 98, 12, (d >= 2) ? MAROON : DARKGRAY);
                     if (d == 3) {
-                        const char* imp2 = "5% IMMUNE | 10% -33%DMG";
-                        DrawText(imp2, (int)(dc.x + (dc.width - MeasureText(imp2, 10)) * 0.5f), (int)dc.y + 96, 10, MAROON);
+                        const char* imp2 = "5% IMMUNE | 10% -33%";
+                        DrawText(imp2, (int)(dc.x + (dc.width - MeasureText(imp2, 11)) * 0.5f), (int)dc.y + 118, 11, MAROON);
                     }
                     const char* stTxt = TextFormat("STREAK: %d (+%d%%)", g_botWinStreak[d], CalcWinStreakBonusPct(g_botWinStreak[d]));
-                    DrawText(stTxt, (int)(dc.x + (dc.width - MeasureText(stTxt, 13)) * 0.5f), (int)dc.y + 134, 13, (Color){ 40, 95, 165, 255 });
+                    DrawText(stTxt, (int)(dc.x + (dc.width - MeasureText(stTxt, 14)) * 0.5f), (int)dc.y + 150, 14, (Color){ 40, 95, 165, 255 });
                     DrawRectangleLinesEx(dc, sel ? 3.5f : 1.5f, sel ? GOLD : BLACK);
                 }
 
                 DrawRectangleRec(btnBot1v1, SKYBLUE);
                 DrawRectangleLinesEx(btnBot1v1, 2.0f, BLACK);
                 DrawText("1 VS 1 BOT", (int)(btnBot1v1.x + (btnBot1v1.width - MeasureText("1 VS 1 BOT", 20)) * 0.5f),
-                         (int)btnBot1v1.y + 18, 20, BLACK);
+                         (int)btnBot1v1.y + 19, 20, BLACK);
 
                 DrawRectangleRec(btnBot2v2, (Color){ 220, 45, 75, 255 });
                 DrawRectangleLinesEx(btnBot2v2, 2.0f, BLACK);
                 DrawText("2 VS 2 BOT", (int)(btnBot2v2.x + (btnBot2v2.width - MeasureText("2 VS 2 BOT", 20)) * 0.5f),
-                         (int)btnBot2v2.y + 18, 20, WHITE);
+                         (int)btnBot2v2.y + 19, 20, WHITE);
 
-                DrawCenteredText("STREAK BONUSES: 4th+:+10% | 6th+:+25% | 11th+:+50% | 16th+:+75% | 21st+:+105%", 405, 12, DARKGRAY);
+                DrawCenteredText("STREAK BONUSES: 4th+:+10%  |  6th+:+25%  |  11th+:+50%  |  16th+:+75%  |  21st+:+105%", 392, 13, DARKGRAY);
             }
             else if (state == MENU_CHALLENGER)
             {
-                DrawCenteredText("CHALLENGER MODE", 76, 28, MAROON);
-                DrawCenteredText("WIN 5 MATCHES IN A ROW TO CLAIM +600 TICKETS!", 122, 18, BLACK);
-                DrawCenteredText("ENTRY FEE: 80 TICKETS  |  BOT ODDS: 75% IMPOSSIBLE / 25% HARD", 152, 14, DARKGRAY);
+                DrawCenteredText("CHALLENGER MODE", 66, 30, MAROON);
+                DrawCenteredText("WIN 5 MATCHES IN A ROW TO CLAIM +600 TICKETS!", 110, 18, BLACK);
+                DrawCenteredText("ENTRY FEE: 80 TICKETS   |   BOT ODDS: 75% IMPOSSIBLE / 25% HARD", 140, 14, DARKGRAY);
 
                 if (!g_challengerActive) {
                     bool canEnter = (g_playerTickets >= 80);
                     DrawRectangleRec(btnChallAction, canEnter ? (Color){ 175, 35, 35, 255 } : GRAY);
                     DrawRectangleLinesEx(btnChallAction, 2.0f, BLACK);
                     const char* txt = canEnter ? "ENTER (80 TICKETS)" : "NEED 80 TICKETS";
-                    DrawText(txt, (int)(btnChallAction.x + (btnChallAction.width - MeasureText(txt, 20)) * 0.5f),
-                             (int)btnChallAction.y + 18, 20, WHITE);
+                    DrawText(txt, (int)(btnChallAction.x + (btnChallAction.width - MeasureText(txt, 21)) * 0.5f),
+                             (int)btnChallAction.y + 20, 21, WHITE);
                 } else {
-                    DrawCenteredText(TextFormat("CURRENT RUN: %d / 5 WINS", g_challengerWins), 205, 24, (Color){ 35, 130, 65, 255 });
+                    DrawCenteredText(TextFormat("CURRENT RUN: %d / 5 WINS", g_challengerWins), 192, 26, (Color){ 35, 130, 65, 255 });
                     DrawCenteredText(TextFormat("NEXT OPPONENT: %s BOT (1V1)",
                                                 (g_challengerCurDiff == BOT_IMPOSSIBLE) ? "IMPOSSIBLE" : "HARD"),
-                                     240, 17, MAROON);
+                                     228, 17, MAROON);
                     DrawRectangleRec(btnChallAction, (Color){ 210, 55, 45, 255 });
                     DrawRectangleLinesEx(btnChallAction, 2.0f, GOLD);
                     const char* txt = TextFormat("FIGHT ROUND %d / 5", g_challengerWins + 1);
-                    DrawText(txt, (int)(btnChallAction.x + (btnChallAction.width - MeasureText(txt, 20)) * 0.5f),
-                             (int)btnChallAction.y + 18, 20, WHITE);
+                    DrawText(txt, (int)(btnChallAction.x + (btnChallAction.width - MeasureText(txt, 21)) * 0.5f),
+                             (int)btnChallAction.y + 20, 21, WHITE);
                 }
             }
             else if (state == MENU_INVENTORY)
@@ -9013,63 +11216,181 @@ int main(void)
                     EndScissorMode();
                     DrawRectangleLinesEx(selectViewport, 1.5f, DARKGRAY);
                     if (invTab == INV_TAB_UPGRADE) {
-                        DrawCenteredText("UPGRADE COST: 5 COPIES -> +5 STARTING HP & +2.5% DAMAGE PER LEVEL", 438, 12, DARKGRAY);
+                        DrawCenteredText("UPGRADE COST: 5 COPIES -> +5 STARTING HP & +2.5% DAMAGE PER LEVEL", 424, 13, DARKGRAY);
                     } else if (invTab == INV_TAB_INVENTORY) {
                         int unlockedCnt = 0;
                         for (int i = 0; i < TYPE_COUNT; i++) if (g_unlocked[i]) unlockedCnt++;
-                        DrawCenteredText(TextFormat("UNLOCKED: %d / %d", unlockedCnt, TYPE_COUNT), 438, 14, DARKGRAY);
+                        DrawCenteredText(TextFormat("UNLOCKED: %d / %d", unlockedCnt, TYPE_COUNT), 424, 15, BLACK);
                     }
                 }
             }
             else if (state == MENU_GACHA)
             {
-                DrawCenteredText("GACHA BALL MACHINE", 58, 26, BLACK);
+                DrawCenteredText("GACHA BALL MACHINE", 44, 24, BLACK);
                 DrawCenteredText(TextFormat("TICKETS: %d   |   PITY  R:%d/60  M:%d/500  L:%d/1400",
                                             g_playerTickets, g_pityRare, g_pityMythic, g_pityLegend),
-                                 92, 15, DARKGRAY);
+                                 72, 14, DARKGRAY);
 
-                Rectangle card = { SCREEN_W / 2.0f - 145.0f, 124.0f, 290.0f, 190.0f };
-                BallType showType = (gachaRolling || gachaHasResult) ? gachaPreview : TYPE_BURST;
-                BallRarity showRarity = g_ballRarity[showType];
-                Color rCol = RarityColor(showRarity);
+                if (gachaHasResult && gachaRollMode > 1) {
+                    // 5-top / 5-bottom grouped result grid (showing x1, x2, x3... for duplicates)
+                    int totalPages = (gachaSummaryCount + 9) / 10;
+                    if (totalPages < 1) totalPages = 1;
+                    if (gachaSummaryPage >= totalPages) gachaSummaryPage = totalPages - 1;
 
-                DrawRectangleRec(card, RAYWHITE);
-                DrawRectangleLinesEx(card, 4.0f, (gachaRolling || gachaHasResult) ? rCol : DARKGRAY);
+                    if (totalPages > 1) {
+                        bool canPrev = (gachaSummaryPage > 0);
+                        bool canNext = (gachaSummaryPage < totalPages - 1);
+                        DrawRectangleRec(btnGachaPrev, canPrev ? LIGHTGRAY : Fade(LIGHTGRAY, 0.45f));
+                        DrawRectangleLinesEx(btnGachaPrev, 1.5f, canPrev ? BLACK : GRAY);
+                        DrawText("< PREV", (int)(btnGachaPrev.x + (btnGachaPrev.width - MeasureText("< PREV", 13)) * 0.5f),
+                                 (int)btnGachaPrev.y + 5, 13, canPrev ? BLACK : GRAY);
 
-                if (gachaRolling || gachaHasResult) {
-                    DrawRectangle((int)card.x + 4, (int)card.y + 4, (int)card.width - 8, 32, rCol);
-                    Color bannerTxtCol = (showRarity >= RARITY_MYTHIC) ? WHITE : BLACK;
-                    const char* rLabel = g_rarityNames[showRarity];
-                    DrawText(rLabel, (int)(card.x + (card.width - MeasureText(rLabel, 18)) * 0.5f),
-                             (int)card.y + 11, 18, bannerTxtCol);
-
-                    Vector2 cPos = { SCREEN_W / 2.0f, card.y + 98.0f };
-                    DrawBallPreviewIcon(showType, cPos, btnColors[showType]);
-
-                    const char* bName = names[showType];
-                    DrawText(bName, (int)(card.x + (card.width - MeasureText(bName, 22)) * 0.5f),
-                             (int)card.y + 148, 22, BLACK);
-
-                    if (gachaHasResult) {
-                        const char* statusTxt = gachaWasNew
-                            ? "NEW BALL UNLOCKED! (x1 COPY)"
-                            : TextFormat("DUPLICATE! (COPIES: x%d)", g_ballCopies[gachaResult]);
-                        DrawCenteredText(statusTxt, 319, 15, gachaWasNew ? DARKGREEN : DARKGRAY);
+                        DrawRectangleRec(btnGachaNext, canNext ? LIGHTGRAY : Fade(LIGHTGRAY, 0.45f));
+                        DrawRectangleLinesEx(btnGachaNext, 1.5f, canNext ? BLACK : GRAY);
+                        DrawText("NEXT >", (int)(btnGachaNext.x + (btnGachaNext.width - MeasureText("NEXT >", 13)) * 0.5f),
+                                 (int)btnGachaNext.y + 5, 13, canNext ? BLACK : GRAY);
                     }
+
+                    const float gCardW = 140.0f;
+                    const float gCardH = 114.0f;
+                    const float gGapX  = 10.0f;
+                    const float gGapY  = 10.0f;
+                    const float gStartX = (SCREEN_W - (5 * gCardW + 4 * gGapX)) * 0.5f;
+                    const float gStartY = 96.0f;
+
+                    int startIdx = gachaSummaryPage * 10;
+                    int endIdx = startIdx + 10;
+                    if (endIdx > gachaSummaryCount) endIdx = gachaSummaryCount;
+
+                    for (int idx = startIdx; idx < endIdx; idx++) {
+                        int slot = idx - startIdx;
+                        int row = slot / 5; // 0 = top row (5), 1 = bottom row (5)
+                        int col = slot % 5;
+                        Rectangle cRect = {
+                            gStartX + col * (gCardW + gGapX),
+                            gStartY + row * (gCardH + gGapY),
+                            gCardW, gCardH
+                        };
+
+                        GachaSummaryItem item = gachaSummary[idx];
+                        BallRarity rar = g_ballRarity[item.type];
+                        Color rCol = RarityColor(rar);
+
+                        DrawRectangleRec(cRect, RAYWHITE);
+                        BeginScissorMode((int)cRect.x, (int)cRect.y, (int)cRect.width, (int)cRect.height);
+
+                        // Rarity header strip
+                        DrawRectangle((int)cRect.x, (int)cRect.y, (int)cRect.width, 18, rCol);
+                        const char* rTag = g_rarityNames[rar];
+                        DrawText(rTag, (int)(cRect.x + (cRect.width - MeasureText(rTag, 11)) * 0.5f),
+                                 (int)cRect.y + 4, 11, (rar >= RARITY_MYTHIC) ? WHITE : BLACK);
+
+                        // Ball preview icon centered inside card
+                        Vector2 iconC = { cRect.x + cRect.width * 0.5f, cRect.y + 56.0f };
+                        DrawBallPreviewIcon(item.type, iconC, btnColors[item.type]);
+
+                        // Bottom name bar
+                        Rectangle nBar = { cRect.x, cRect.y + cRect.height - 20.0f, cRect.width, 20.0f };
+                        DrawRectangleRec(nBar, (Color){ 30, 32, 38, 255 });
+                        DrawText(names[item.type],
+                                 (int)(cRect.x + (cRect.width - MeasureText(names[item.type], 12)) * 0.5f),
+                                 (int)nBar.y + 4, 12, WHITE);
+
+                        // Count badge (x1, x2, x3...) in top-right below rarity bar
+                        const char* cntTxt = TextFormat("x%d", item.count);
+                        int cw = MeasureText(cntTxt, 13);
+                        Rectangle cntPill = { cRect.x + cRect.width - cw - 12.0f, cRect.y + 21.0f, (float)cw + 8.0f, 17.0f };
+                        DrawRectangleRec(cntPill, Fade((Color){ 20, 22, 28, 255 }, 0.88f));
+                        DrawRectangleLinesEx(cntPill, 1.0f, GOLD);
+                        DrawText(cntTxt, (int)cntPill.x + 4, (int)cntPill.y + 2, 13, GOLD);
+
+                        // NEW badge in top-left if newly unlocked
+                        if (item.wasNew) {
+                            Rectangle newPill = { cRect.x + 4.0f, cRect.y + 21.0f, 34.0f, 16.0f };
+                            DrawRectangleRec(newPill, (Color){ 35, 165, 65, 255 });
+                            DrawText("NEW", (int)newPill.x + 4, (int)newPill.y + 3, 11, WHITE);
+                        }
+
+                        EndScissorMode();
+                        DrawRectangleLinesEx(cRect, 2.5f, rCol);
+                        DrawRectangleLines((int)cRect.x, (int)cRect.y, (int)cRect.width, (int)cRect.height, BLACK);
+                    }
+
+                    const char* sumTxt = (totalPages > 1)
+                        ? TextFormat("ROLLED x%d  |  %d UNIQUE BALLS  |  %d NEW  |  PAGE %d / %d",
+                                     gachaRollMode, gachaSummaryCount, gachaTotalNew, gachaSummaryPage + 1, totalPages)
+                        : TextFormat("ROLLED x%d  |  %d UNIQUE BALLS  |  %d NEW UNLOCKED!",
+                                     gachaRollMode, gachaSummaryCount, gachaTotalNew);
+                    DrawCenteredText(sumTxt, 337, 13, (gachaTotalNew > 0) ? DARKGREEN : DARKGRAY);
                 } else {
-                    DrawCenteredText("PRESS ROLL TO SPIN!", (int)card.y + 85, 20, DARKGRAY);
+                    Rectangle card = { SCREEN_W / 2.0f - 150.0f, 108.0f, 300.0f, 198.0f };
+                    BallType showType = (gachaRolling || gachaHasResult) ? gachaPreview : TYPE_BURST;
+                    BallRarity showRarity = g_ballRarity[showType];
+                    Color rCol = RarityColor(showRarity);
+
+                    DrawRectangleRec(card, RAYWHITE);
+                    DrawRectangleLinesEx(card, 4.0f, (gachaRolling || gachaHasResult) ? rCol : DARKGRAY);
+
+                    if (gachaRolling || gachaHasResult) {
+                        DrawRectangle((int)card.x + 4, (int)card.y + 4, (int)card.width - 8, 32, rCol);
+                        Color bannerTxtCol = (showRarity >= RARITY_MYTHIC) ? WHITE : BLACK;
+                        const char* rLabel = g_rarityNames[showRarity];
+                        DrawText(rLabel, (int)(card.x + (card.width - MeasureText(rLabel, 18)) * 0.5f),
+                                 (int)card.y + 11, 18, bannerTxtCol);
+
+                        Vector2 cPos = { SCREEN_W / 2.0f, card.y + 100.0f };
+                        DrawBallPreviewIcon(showType, cPos, btnColors[showType]);
+
+                        const char* bName = names[showType];
+                        DrawText(bName, (int)(card.x + (card.width - MeasureText(bName, 22)) * 0.5f),
+                                 (int)card.y + 152, 22, BLACK);
+
+                        if (gachaRolling && gachaRollMode > 1) {
+                            DrawCenteredText(TextFormat("ROLLING x%d...", gachaRollMode), 316, 16, PURPLE);
+                        } else if (gachaHasResult) {
+                            const char* statusTxt = gachaWasNew
+                                ? "NEW BALL UNLOCKED! (x1 COPY)"
+                                : TextFormat("DUPLICATE! (COPIES: x%d)", g_ballCopies[gachaResult]);
+                            DrawCenteredText(statusTxt, 316, 15, gachaWasNew ? DARKGREEN : DARKGRAY);
+                        }
+                    } else {
+                        DrawCenteredText("CHOOSE x1, x10, OR x100 TO ROLL!", (int)card.y + 88, 16, DARKGRAY);
+                    }
                 }
 
-                bool canRoll = !gachaRolling && (g_playerTickets > 0);
-                DrawRectangleRec(btnRollNow, canRoll ? (Color){ 45, 180, 65, 255 } : GRAY);
-                DrawRectangleLinesEx(btnRollNow, 2.0f, BLACK);
-                const char* rollTxt = gachaRolling ? "ROLLING..." : (canRoll ? "ROLL GACHA (1 TICKET)" : "NO TICKETS LEFT");
-                DrawText(rollTxt,
-                         (int)(btnRollNow.x + (btnRollNow.width - MeasureText(rollTxt, 16)) * 0.5f),
-                         (int)btnRollNow.y + 18, 16, WHITE);
+                // 3 Roll buttons: x1 (1 ticket), x10 (10 tickets), x100 (100 tickets)
+                bool canRoll1   = !gachaRolling && (g_playerTickets >= 1);
+                bool canRoll10  = !gachaRolling && (g_playerTickets >= 10);
+                bool canRoll100 = !gachaRolling && (g_playerTickets >= 100);
 
-                DrawCenteredText("RATES: COMMON 55% | UNCOMMON 29% | RARE 10% | MYTHIC 5% | LEGENDARY 1%",
-                                 415, 12, DARKGRAY);
+                DrawRectangleRec(btnRoll1, canRoll1 ? (Color){ 45, 175, 65, 255 } : GRAY);
+                DrawRectangleLinesEx(btnRoll1, 2.0f, BLACK);
+                const char* r1Txt = gachaRolling ? "ROLLING..." : "ROLL x1 (1 TKT)";
+                DrawText(r1Txt, (int)(btnRoll1.x + (btnRoll1.width - MeasureText(r1Txt, 15)) * 0.5f),
+                         (int)btnRoll1.y + 15, 15, WHITE);
+
+                DrawRectangleRec(btnRoll10, canRoll10 ? (Color){ 55, 125, 220, 255 } : GRAY);
+                DrawRectangleLinesEx(btnRoll10, 2.0f, BLACK);
+                const char* r10Txt = gachaRolling ? "ROLLING..." : "ROLL x10 (10 TKTS)";
+                DrawText(r10Txt, (int)(btnRoll10.x + (btnRoll10.width - MeasureText(r10Txt, 15)) * 0.5f),
+                         (int)btnRoll10.y + 15, 15, WHITE);
+
+                DrawRectangleRec(btnRoll100, canRoll100 ? (Color){ 195, 45, 60, 255 } : GRAY);
+                DrawRectangleLinesEx(btnRoll100, 2.0f, canRoll100 ? GOLD : BLACK);
+                const char* r100Txt = gachaRolling ? "ROLLING..." : "ROLL x100 (100)";
+                DrawText(r100Txt, (int)(btnRoll100.x + (btnRoll100.width - MeasureText(r100Txt, 15)) * 0.5f),
+                         (int)btnRoll100.y + 15, 15, canRoll100 ? GOLD : WHITE);
+
+                if (needStarterGacha) {
+                    float pulse = 0.5f + 0.5f * sinf((float)GetTime() * 6.0f);
+                    if (canRoll1)  DrawRectangleLinesEx((Rectangle){ btnRoll1.x - 3, btnRoll1.y - 3, btnRoll1.width + 6, btnRoll1.height + 6 }, 3.0f, Fade(GOLD, 0.65f + 0.35f * pulse));
+                    if (canRoll10) DrawRectangleLinesEx((Rectangle){ btnRoll10.x - 3, btnRoll10.y - 3, btnRoll10.width + 6, btnRoll10.height + 6 }, 3.0f, Fade(GOLD, 0.65f + 0.35f * pulse));
+                    DrawCenteredText("TUTORIAL: USE YOUR 15 STARTER TICKETS! PRESS ROLL x1 OR ROLL x10 TO UNLOCK YOUR FIRST BALL!",
+                                     414, 13, (Color){ 185, 75, 15, 255 });
+                } else {
+                    DrawCenteredText("RATES: COMMON 55% | UNCOMMON 29% | RARE 10% | MYTHIC 5% | LEGENDARY 1%",
+                                     414, 12, DARKGRAY);
+                }
             }
             else if (state == MENU_SELECT)
             {
@@ -9095,11 +11416,11 @@ int main(void)
                     };
                     title = titles2v2[selectStep];
                 }
-                DrawCenteredText(title, 52, 22, BLACK);
+                DrawCenteredText(title, 48, 21, BLACK);
                 if (isVsBot && vsBotDraftActive) {
-                    DrawCenteredText("3 RANDOM BALLS DRAWN FROM YOUR OWNED BALLS - PICK 1 TO FIGHT BOT", 74, 12, DARKGRAY);
+                    DrawCenteredText("3 RANDOM BALLS DRAWN FROM YOUR OWNED BALLS - PICK 1 TO FIGHT BOT", 73, 13, DARKGRAY);
                 } else {
-                    DrawCenteredText("SCROLL WITH MOUSE WHEEL OR UP/DOWN KEYS (SORTED BY RARITY)", 74, 12, DARKGRAY);
+                    DrawCenteredText("SCROLL WITH MOUSE WHEEL OR UP/DOWN KEYS (SORTED BY RARITY)", 73, 13, DARKGRAY);
                 }
 
                 BeginScissorMode((int)selectViewport.x, (int)selectViewport.y,
